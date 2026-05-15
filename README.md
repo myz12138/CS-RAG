@@ -1,8 +1,8 @@
-# C2RAG
+# CS-RAG
 
 This repository contains the reference implementation of the paper:
 
-> **Mitigating KG Quality Issues: A Robust Multi-Hop GraphRAG Retrieval Framework** (ICML 2026 submission)
+> **Toward Robust GraphRAG: Mitigating Retrieval Drift and Hallucination from Imperfect Knowledge Graphs** (NIPS 2026 submission)
 
 C2RAG targets **robust multi-hop question answering over imperfect knowledge graphs (KGs)**. It is designed to reduce two common failure modes in multi-hop graph retrieval:
 
