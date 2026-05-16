@@ -1,5 +1,9 @@
 # CS-RAG
 
+![Windows](https://img.shields.io/badge/Platform-Windows-blue?logo=windows)
+![Local](https://img.shields.io/badge/Deployment-100%25_Local-brightgreen)
+![Status](https://img.shields.io/badge/Status-Stable_v1.1-orange)
+
 This repository contains the reference implementation of the paper:
 
 **Toward Robust GraphRAG: Mitigating Retrieval Drift and Hallucination from Imperfect Knowledge Graphs** (NeurIPS 2026 submission).
@@ -22,52 +26,104 @@ The end-to-end logic is organized as:
 
 ---
 
-## 2. CS-RAG Workflow System (Desktop)
+## 2. CS-RAG Workflow System Guide (Desktop)
 
-In addition to the research code, this project also includes a workflow-driven CS-RAG system design for practical usage and analysis.
+This section integrates the complete workflow-oriented system guide and aligns all terminology to **CS-RAG**.
 
-### 2.1 System Positioning
+### 2.1 Core Features
 
-The CS-RAG workflow system is designed for local or private deployment of robust GraphRAG-style multi-hop QA, with an emphasis on:
+- **Zero-Configuration Runtime**: Built-in deep learning runtime (PyTorch/Transformers). In desktop release mode, launching the executable starts both backend terminal and Web UI.
+- **100% Data Privacy (Local-First)**: Compatible with local LLM serving via OpenAI-style API format (e.g., vLLM/Ollama adapters). Dense vector indexing remains local.
+- **Anti-Hallucination Retrieval**: A robust multi-stage pipeline with Neff-based sufficiency checking and automatic `Text Fallback` retrieval when graph evidence is insufficient.
+- **Robust Data Management**:
+  - Sentence-level MD5 deduplication to block redundant ingestion.
+  - Timestamped source archiving for traceability.
+- **Glass-Box Observability**: Intermediate decomposition, retrieval, reranking, and evidence decisions are explicitly exposed for analysis.
 
-- end-to-end operability,
-- transparent intermediate reasoning states,
-- and reproducible robustness experiments.
+### 2.2 Download
 
-### 2.2 Core Capabilities
+The packaged desktop system (including runtime dependencies and offline model assets) is approximately **2.44 GB**.
 
-- **Zero-friction runtime**: packaged deployment can run without manual Python environment setup.
-- **Local-first privacy**: compatible with OpenAI-format local serving backends (e.g., vLLM/Ollama adapters).
-- **Anti-hallucination retrieval**: Neff-based sufficiency checking and automatic text fallback when graph evidence is insufficient.
-- **Robust ingestion**: sentence-level deduplication and source archiving for traceability.
-- **Glass-box observability**: explicit exposure of decomposition, retrieval, reranking, and evidence decisions.
+- **[Download CS-RAG Workflow v1.1 (Windows)](https://huggingface.co/203824552xjc/GraphRAG-Studio-Release/resolve/main/GraphRAG_Studio_v1.1_Windows.zip?download=true)**
 
-### 2.3 Workflow Steps
+If download speed is limited in your region, using a download manager is recommended.
 
-1. **Initialization**
-   - Start the packaged CS-RAG engine (desktop release) and open the local Web UI.
-   - On first launch, runtime folders are initialized (workspace/data cache/model cache/config file).
+### 2.3 Quick Start
 
-2. **Configuration**
-   - Configure LLM endpoint (`Base URL`, `API Key`, `Model Name`).
-   - Configure retrieval controls (Top-N, entity/fallback recall depth, Neff threshold).
+#### Step 1: Initialization
 
-3. **Knowledge Base Construction**
-   - Create/select a project.
-   - Choose **fresh build** or **incremental merge**.
-   - Build graph + dense index from text input and inspect graph preview.
+Extract the package to an English-only path (for example: `D:\CS-RAG_Workflow`) and launch the executable. The backend terminal opens first, then the browser UI is available at `http://127.0.0.1:8866`.
 
-4. **Multi-hop QA and Reasoning Inspection**
-   - Submit a complex question.
-   - Inspect grounded output with source evidence chain (`[KG]` vs `[Text]`).
-   - Inspect activated reasoning subgraph and pipeline diagnostics.
+On first launch, the system auto-generates runtime directories next to the executable:
 
-### 2.4 Operational Notes
+- `workspace/`: local cache for KG JSON files, entity dictionaries, and dense vector indexes.
+- `data_input/`: immutable archive for uploaded `.txt` sources (with timestamping).
+- `models/`: offline cache for embedding/reranker models.
+- `config.json`: runtime configuration; auto-regenerated if accidentally removed.
 
-- Keep the backend terminal alive during active service.
-- First run may download required NLP/model dependencies.
-- Models remain in memory for low-latency inference.
-- If the browser is closed accidentally, reconnect to the local UI endpoint without restarting the backend.
+#### Step 2: System Configuration
+
+In the **Configuration** tab:
+
+1. **LLM Settings**
+   - Configure `Base URL`, `Model Name`, and `API Key`.
+   - Supports both cloud APIs and local OpenAI-format serving endpoints.
+
+2. **Retrieval Parameters**
+   - **Top-N**: maximum evidence snippets sent to the final answer model.
+   - **Entity / Fallback K**: recall depth for graph traversal and text fallback.
+   - **Neff Threshold**: topology entropy threshold for evidence sufficiency control.
+
+After clicking **Save**, parameter updates are applied in-memory immediately (no service restart required).
+
+#### Step 3: Knowledge Base Construction
+
+In the **KG Construction** tab:
+
+1. **Project Management**
+   - Create a new project or select an existing project.
+
+2. **Build Modes**
+   - **Fresh Build**: reset graph/vector indexes for the selected project.
+   - **Incremental Merging**: append new knowledge to an existing project.
+   - Sentence-level MD5 deduplication is applied to prevent duplicate ingestion.
+
+3. **Automated Pipeline**
+   - Upload `.txt` files or paste text.
+   - Click **Start Building** for chunking, graph extraction, and vector indexing.
+   - After completion, the right panel renders a graph preview (top core nodes for browser stability).
+
+4. **Vector Refresh**
+   - If embedding model settings are changed, vector index can be rebuilt from cached text without rerunning extraction.
+
+#### Step 4: Multi-hop QA and Reasoning
+
+In the **Multi-hop QA** tab:
+
+1. **Transparent Execution**
+   - Submit a multi-hop question and track pipeline progress in backend logs.
+
+2. **Grounded Answer + Evidence Chain**
+   - The system returns concise answers and explicit evidence provenance (`[KG]` vs `[Text]`).
+
+3. **Activated Reasoning Subgraph**
+   - The panel highlights the activated reasoning nodes/paths for explainability.
+
+### 2.4 Glass-Box Analysis Dashboard
+
+The dashboard provides synchronized introspection of the internal pipeline:
+
+- **Phase 1 (Logical Skeleton Decomposition)**: decomposes complex query into atomic triples.
+- **Phase 2 (Graph Coarse Ranking & Neff Entropy)**: evaluates graph evidence sufficiency; unresolved/high-entropy cases trigger text fallback.
+- **Phase 3 (Evidence Re-ranking Top-K)**: displays recalled evidence with similarity scores and detailed context view.
+
+### 2.5 System Mechanics and Operational Details
+
+- **Backend Terminal**: the terminal is the active backend runtime; closing it terminates the service.
+- **First-Run Dependency Download**: initial execution may fetch tokenizer/model resources.
+- **Memory Residency**: models remain loaded for low-latency QA.
+- **Graceful Shutdown**: use the UI stop operation (if provided by desktop build) to safely release memory/resources.
+- **Session Recovery**: if browser closes accidentally, reconnect to `http://127.0.0.1:8866` without restarting backend.
 
 ---
 
