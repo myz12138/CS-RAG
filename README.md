@@ -8,7 +8,7 @@ This repository contains the reference implementation of the paper:
 
 **Toward Robust GraphRAG: Mitigating Retrieval Drift and Hallucination from Imperfect Knowledge Graphs** (NeurIPS 2026 submission).
 
-## 1. Paper Overview
+## 1. Paper Overview ![Architecture of CS-RAG](./framework_PNG.png)
 
 In multi-hop QA, practical Knowledge Graphs are often imperfect and induce two major failure modes:
 
@@ -28,7 +28,7 @@ The end-to-end logic is organized as:
 
 ## 2. CS-RAG Workflow System Guide (Desktop)
 
-This section integrates the complete workflow-oriented system guide and aligns all terminology to **CS-RAG**. Thanks for our co-worker. ![Jinchuan Xu](https://github.com/203824552)
+This section integrates the complete workflow-oriented system guide and aligns all terminology to **CS-RAG**. Thanks for our co-worker. [Jinchuan Xu](https://github.com/203824552)
 
 ### 2.1 Core Features
 
