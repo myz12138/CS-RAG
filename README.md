@@ -28,7 +28,7 @@ The end-to-end logic is organized as:
 
 ## 2. CS-RAG Workflow System Guide (Desktop)
 
-This section integrates the complete workflow-oriented system guide and aligns all terminology to **CS-RAG**.
+This section integrates the complete workflow-oriented system guide and aligns all terminology to **CS-RAG**. Thanks for our co-worker. ![Jinchuan Xu](https://github.com/203824552)
 
 ### 2.1 Core Features
 
