@@ -1,0 +1,65 @@
+{
+  "python_exec": "python",
+  "run": {
+    "dataset": "2wiki",
+    "max_samples": 1000,
+    "run_phase1": true,
+    "run_phase2": true,
+    "run_evaluation": true
+  },
+  "scripts": {
+    "phase1": "components/phase1_run.py",
+    "phase2": "components/phase2_run.py",
+    "evaluation": "components/eval_run.py"
+  },
+  "paths": {
+    "query_json": "planned_queries/2wiki_data/query_graph_v8_2wiki.json",
+    "raw_data_json": "dataset/2wikimultihopqa.json",   #2wikimultihopqa.json"
+    "data_json": "dataset/2wikimultihopqa.json",  # 2wikimultihopqa.json"
+    "kg_path": "KGs/KG_2wiki", #artifacts/kg_perturbed_2wiki/semantic_flip_10_global/
+    "result_dir": "outputs/robustness/2wiki/gpt",
+    "phase1_output": "phase1_evidence.json",
+    "phase2_output": "phase2_evidence.json",
+    "eval_output": "qa_results_with_recall.json"
+  },
+  "global_env": {
+    "OPENAI_API_KEY": "",
+    "OPENAI_BASE_URL": "",
+    "OPENAI_MODEL": "gpt-4o-mini"
+  },
+  "phase1": {
+    "env": {
+      "EMB_MODEL": "sentence-transformers/all-MiniLM-L6-v2",
+      "EMB_DEVICE": "cpu",
+      "TOP_N_LLM": 3,
+      "TOP_K_ENTITY": 1,
+      "RELATION_K": 3,
+      "NEFF_THRESHOLD": 1.0,
+      "RERANK_MODEL": "BAAI/bge-reranker-v2-m3",
+      "RERANK_MAX_LENGTH": 128,
+      "RERANK_BATCH": 32,
+      "RERANK_FP16": 1,
+      "INCLUDE_QUESTION_IN_RERANK": 1
+    }
+  },
+  "phase2": {
+    "env": {
+      "EMB_MODEL": "sentence-transformers/all-MiniLM-L6-v2",
+      "EMB_DEVICE": "cpu",
+      "UNRES_TOP_SIMILAR": 20,
+      "TOPK_UNRESOLVED": 8,
+      "RERANK_MODEL": "BAAI/bge-reranker-v2-m3",
+      "RERANK_MAX_LENGTH": 512,
+      "RERANK_BATCH": 32,
+      "RERANK_FP16": 1
+    }
+  },
+  "evaluation": {
+    "env": {
+      "PROMPT_MAX_TRIPLES": 20,
+      "PROMPT_MAX_TEXT_PER_TRIPLE": 8,
+      "RECALL_K_LIST": "2,5,10",
+      "GT_SET_FILE_2WIKI": "planned_queries/2wiki_data/ground_truth_answer_set_v8_2wiki.json"
+    }
+  }
+}

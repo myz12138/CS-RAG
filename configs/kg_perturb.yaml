@@ -1,0 +1,126 @@
+{
+  "seed": 2026,
+  "output_root": "artifacts/kg_perturbed_musique",
+
+  "run": {
+    "dataset": "2wiki",
+
+    "combine_mode": "cartesian",
+    "ratios": [0.1, 0.2,0.3,0.4,0.5],
+    "scopes": ["query_subgraph","global"], #"global"
+    "include_clean_copy": false,
+    "selected_scenarios": [],
+    "final_sanitize": false,
+
+    "issue_sets": [
+      {
+        "name": "semantic_flip",
+        "issue_types": ["semantic_flip"]
+      },
+      {
+        "name": "mis_bound_relation",
+        "issue_types": ["mis_bound_relation"]
+      },
+      {
+        "name": "over_generalized_relation",
+        "issue_types": ["over_generalized_relation"]
+      },
+      {
+        "name": "missing_bridge_edge",
+        "issue_types": ["missing_bridge_edge"]
+      },
+      {
+        "name": "dropped_qualifier",
+        "issue_types": ["dropped_qualifier"]
+      },
+      {
+        "name": "spurious_noise_combo",
+        "issue_types": ["semantic_flip", "mis_bound_relation", "over_generalized_relation"]
+      },
+      {
+        "name": "incomplete_info_combo",
+        "issue_types": ["missing_bridge_edge", "dropped_qualifier"]
+      }
+    ],
+
+    "query_subgraph": {
+      "query_json": "",
+      "max_samples": 1000,
+      "hops": 2,
+      "entity_match_topk": 3,
+      "entity_match_min_score": 0.65
+    }
+  },
+
+  "datasets": {
+    "2wiki": {
+      "kg_dir": "KGs/KG_2wiki",
+      "query_json": "planned_queries/2wiki_data/query_graph_v8_2wiki.json"
+    },
+    "hotpotqa": {
+      "kg_dir": "KGs/KG_hotpotqa",
+      "query_json": "planned_queries/hotpotqa_data/query_graph_v8_hotpotqa.json"
+    },
+    "musique": {
+      "kg_dir": "KGs/KG_musique",
+      "query_json": "planned_queries/musique_data/query_graph_v8_musique.json"
+    }
+  },
+
+  "issue_params": {
+    "semantic_flip": {
+      "enable_vocab_fallback": false,
+      "use_phrase_pairs": false,
+      "relation_flip_map": {
+        "born in": "died in",
+        "died in": "born in",
+        "born on": "died on",
+        "died on": "born on",
+        "parent of": "child of",
+        "child of": "parent of",
+        "located in": "contains",
+        "contains": "located in",
+        "winner of": "loser of",
+        "loser of": "winner of"
+      },
+      "fallback_default_relation": "is unrelated to"
+    },
+
+    "mis_bound_relation": {
+      "endpoint": "tail",
+      "same_type_only": true
+    },
+
+    "over_generalized_relation": {
+      "mode": "replace",
+      "generic_relations": [
+        "related to",
+        "associated with",
+        "connected to",
+        "linked with"
+      ]
+    },
+
+    "missing_bridge_edge": {
+      "prefer_query_relations": true,
+      "prefer_depth_bridge": true
+    },
+
+    "dropped_qualifier": {
+      "qualifier_keys": [
+        "qualifier",
+        "qualifiers",
+        "time",
+        "date",
+        "year",
+        "start_time",
+        "end_time",
+        "point_in_time",
+        "location"
+      ],
+      "strip_parenthetical": true,
+      "strip_temporal_tokens": true,
+      "strip_trailing_comma_clause": true
+    }
+  }
+}

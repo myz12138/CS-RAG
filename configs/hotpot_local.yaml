@@ -1,0 +1,57 @@
+paths:
+  hotpot_train: ./hotpot_data/hotpot_train_v1.1.json
+  hotpot_dev:  ./hotpot_data/hotpot_dev_distractor_v1.json
+
+embed:
+  # If EMB_ENDPOINT/EMB_API_KEY are set, we'll use remote embeddings (OpenAI-compatible).
+  # Otherwise, we fallback to sentence-transformers locally.
+  model: sentence-transformers/all-MiniLM-L6-v2
+  #text-embedding-3-small
+  #sentence-transformers/all-MiniLM-L6-v2
+  device: cuda:0
+
+seedkg:
+  pages: 2000
+
+model:
+  gnn_layers: 3
+  gnn_hidden: 256
+  q_dim: 384
+  z_dim: 384
+  vkg_nodes_max: 64
+  vkg_latent: 128
+  vkg_hidden: 256
+
+train:
+  lr_gnn: 2e-4              # 若 freeze_gnn=false 生效
+  lr_prompt: 2e-4
+  epochs_scorer: 3
+  print_every: 10
+
+  epochs_vkg: 20
+  epochs_mapper: 20
+  lr: 0.001
+  lr_vkg: 0.001
+  batch_size: 2
+
+vkg:
+  tau_c: 0.15
+  top_r: 10
+loss:
+  lambda_chunk_node: 1.0
+  lambda_edge_bpr: 1.0
+
+vkg_dir: ./artifacts/vkg
+
+scorer:
+  tau_w: 0.25    # 推断建议和训练一致，偏大一点更平滑；如训练是 0.15，这里也可 0.15
+mapper:
+  tau_map: 0.10  # 同上，和训练一致
+
+infer:
+  alpha: 1.0     # 单点软聚合权重
+  beta:  1.0     # 1-hop 路径权重
+  gamma: 0.5     # 2-hop 路径权重
+
+
+
