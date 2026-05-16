@@ -1,0 +1,7 @@
+{
+  "status": "done",
+  "next_title_idx": 9838,
+  "entities_count": 128148,
+  "triples_count": 120644,
+  "out_dir": "kg_extractors/KGs/KG_musique"
+}
