@@ -63,6 +63,8 @@ On first launch, the system auto-generates runtime directories next to the execu
 
 #### Step 2: System Configuration
 
+![CS-RAG Configuration](https://github.com/user-attachments/assets/97f88902-f28f-43b4-8931-ddb7fabe41a2)
+
 In the **Configuration** tab:
 
 1. **LLM Settings**
@@ -77,6 +79,8 @@ In the **Configuration** tab:
 After clicking **Save**, parameter updates are applied in-memory immediately (no service restart required).
 
 #### Step 3: Knowledge Base Construction
+
+![CS-RAG KG Construction](https://github.com/user-attachments/assets/7e95027a-0f15-4c28-80c1-6602965b31fd)
 
 In the **KG Construction** tab:
 
@@ -98,6 +102,8 @@ In the **KG Construction** tab:
 
 #### Step 4: Multi-hop QA and Reasoning
 
+![CS-RAG Multi-hop QA](https://github.com/user-attachments/assets/f43bec92-3253-47f1-8b3b-0e8aa64eee8d)
+
 In the **Multi-hop QA** tab:
 
 1. **Transparent Execution**
@@ -110,6 +116,8 @@ In the **Multi-hop QA** tab:
    - The panel highlights the activated reasoning nodes/paths for explainability.
 
 ### 2.4 Glass-Box Analysis Dashboard
+
+![CS-RAG Glass-Box Dashboard](https://github.com/user-attachments/assets/f936e1a0-67a8-4a40-998b-8c112827fd28)
 
 The dashboard provides synchronized introspection of the internal pipeline:
 
