@@ -2,215 +2,263 @@
 
 This repository contains the reference implementation of the paper:
 
-> **Toward Robust GraphRAG: Mitigating Retrieval Drift and Hallucination from Imperfect Knowledge Graphs** (NIPS 2026 submission)
+**Toward Robust GraphRAG: Mitigating Retrieval Drift and Hallucination from Imperfect Knowledge Graphs** (NeurIPS 2026 submission).
 
-C2RAG targets **robust multi-hop question answering over imperfect knowledge graphs (KGs)**. It is designed to reduce two common failure modes in multi-hop graph retrieval:
+## 1. Paper Overview
 
-- **Retrieval drift**: noisy/spurious KG edges gradually divert the retrieval trajectory.
-- **Retrieval hallucination**: missing KG evidence causes the retriever to keep propagating structurally without sufficient support.
-  
-![Architecture of C2RAG](framework_PNG)
+In multi-hop QA, practical Knowledge Graphs are often imperfect and induce two major failure modes:
 
-## Repository Structure
+- **Retrieval Drift**: noisy KG edges gradually divert the reasoning trajectory.
+- **Retrieval Hallucination**: key KG evidence is missing, so the system can keep traversing structure without sufficient support.
 
-The code is organized to mirror the paper modules.
+The core contribution of this work is to make multi-hop reasoning robust under these conditions:
 
-- `configs/`
-  - `config.py`: CLI arguments and dataset-specific default paths.
-  - `io.py`: JSON helpers and query-plan normalization.
-- `datasets/`
-  - `dataset/`: benchmark QA files (`2wiki`, `hotpotqa`, `musique`).
-  - `kg_*_1000_json/`: prebuilt KG bundles aligned to the benchmarks.
-- `kg/`: KG loading + indexing utilities (entity list, triple list, 1-hop indices).
-- `modules/`: core method modules
-  - `Atomic_Constraint_Planning.py`: atomic constraint planning (query decomposition).
-  - `anchor_matching.py`: anchor entity matching from constraints to KG entities.
-  - `relation_alignment.py`: relation semantic alignment (embedding similarity; query uses `relation_variants`).
-  - `contextual_reranking.py`: cross-encoder reranking with question + constraint context.
-  - `sufficiency_check.py`: hop-wise sufficiency check using effective-support (`N_eff`).
-  - `binding_propagation.py`: variable binding consolidation + binding-consistent filtering/propagation.
-  - `textual_recovery.py`: fallback textual recovery for unresolved constraints.
-  - `dataset_adapters.py`, `provenance.py`, `query_texts.py`: dataset adapters and utilities.
-- `pipelines/`
-  - `pipeline1.py`: Stage-1 structural retrieval orchestration.
-  - `pipeline2.py`: Stage-2 textual recovery + evidence assembly.
-- `rerank/`: cross-encoder wrapper (HF `AutoModelForSequenceClassification`).
-- `sim/`: dense embedding wrapper.
-- `scripts/`: runnable entry points
-  - `run_stage1.py`, `run_stage2.py`, `run.py`: Stage-1, Stage-2, or end-to-end.
-  - `evaluation.py`: QA EM/F1 + retrieval recall evaluation.
+1. Convert complex questions into traceable query constraints (`query_plan`) and perform constraint-level structured retrieval to reduce drift.
+2. Apply sufficiency checking to discriminate between sufficiently resolved and unresolved constraints, then use binding propagation for resolved parts and text recovery for unresolved parts.
+
+The end-to-end logic is organized as:
+
+`Query Plan -> Phase1 (Structured Constraint Retrieval) -> Phase2 (Text Recovery for Unresolved Constraints) -> Evaluation`
 
 ---
 
-## Requirements
+## 2. CS-RAG Workflow System (Desktop)
 
-- Python >= 3.10
-- Core packages:
-  - `torch`
-  - `transformers`
-  - `sentence-transformers` (recommended; used for dense similarity)
-  - `openai` (for Atomic Constraint Planning and evaluation-time QA generation)
-  - `tqdm`, `numpy`
+In addition to the research code, this project also includes a workflow-driven CS-RAG system design for practical usage and analysis.
 
-Example (CPU-only):
+### 2.1 System Positioning
 
-```bash
-pip install torch transformers sentence-transformers openai tqdm numpy
-```
+The CS-RAG workflow system is designed for local or private deployment of robust GraphRAG-style multi-hop QA, with an emphasis on:
 
-If you have a CUDA GPU, `torch` + `transformers` will automatically leverage it for the reranker when available.
+- end-to-end operability,
+- transparent intermediate reasoning states,
+- and reproducible robustness experiments.
 
----
+### 2.2 Core Capabilities
 
-## Data and KG Format
+- **Zero-friction runtime**: packaged deployment can run without manual Python environment setup.
+- **Local-first privacy**: compatible with OpenAI-format local serving backends (e.g., vLLM/Ollama adapters).
+- **Anti-hallucination retrieval**: Neff-based sufficiency checking and automatic text fallback when graph evidence is insufficient.
+- **Robust ingestion**: sentence-level deduplication and source archiving for traceability.
+- **Glass-box observability**: explicit exposure of decomposition, retrieval, reranking, and evidence decisions.
 
-This repo includes:
+### 2.3 Workflow Steps
 
-- QA benchmarks: `datasets/dataset/`
-  - `2wikimultihopqa.json`
-  - `hotpotqa.json`
-  - `musique.json`
-- Prebuilt KGs: `datasets/kg_*_1000_json/`
-  - `entities.jsonl`: entity inventory
-  - `triples.jsonl`: KG triples
-  - `title2entities.jsonl`: document-to-entity mapping
-  - `title2triples.jsonl`: document-to-triple mapping
+1. **Initialization**
+   - Start the packaged CS-RAG engine (desktop release) and open the local Web UI.
+   - On first launch, runtime folders are initialized (workspace/data cache/model cache/config file).
 
-To plug in your own KG, ensure `kg/loader.py` can load it (either a `.pt`, a `.json` containing `{entities, triples}`, or a directory of `.jsonl` files).
+2. **Configuration**
+   - Configure LLM endpoint (`Base URL`, `API Key`, `Model Name`).
+   - Configure retrieval controls (Top-N, entity/fallback recall depth, Neff threshold).
 
----
+3. **Knowledge Base Construction**
+   - Create/select a project.
+   - Choose **fresh build** or **incremental merge**.
+   - Build graph + dense index from text input and inspect graph preview.
 
-## Running C2RAG
+4. **Multi-hop QA and Reasoning Inspection**
+   - Submit a complex question.
+   - Inspect grounded output with source evidence chain (`[KG]` vs `[Text]`).
+   - Inspect activated reasoning subgraph and pipeline diagnostics.
 
-### Important: run as a Python module
+### 2.4 Operational Notes
 
-Several scripts use package-relative imports (e.g., `from ..configs...`). To run reliably:
-
-1. Make sure the repository folder name is a valid Python identifier (no hyphens). For example, rename the repo root to `c2rag`.
-2. Run with `python -m` from the **parent directory** so the package is importable.
-
-Example:
-
-```bash
-# Clone into a valid package name
-git clone <REPO_URL> c2rag
-
-# Run from the parent directory
-cd ..
-python -m c2rag.scripts.run --dataset musique
-```
-
-### Step 0: Atomic Constraint Planning (Query Decomposition)
-
-C2RAG expects a `query_json` containing decomposed constraint triples with the schema:
-
-```json
-{
-  "id": "...",
-  "question": "...",
-  "ground_truth_answer": "...",
-  "query_plan": [
-    {"head": "...", "tail": "...", "relation_variants": ["...", "...", "..."]}
-  ]
-}
-```
-
-Notes:
-- Query-side canonical `relation` is **not required**. The pipeline uses **`relation_variants`** for semantic alignment.
-- Variables should be `?`-prefixed (e.g., `?person`, `?country`).
-
-Generate `query_json` programmatically (writes to `args.query_json` from `configs/config.py`):
-
-```bash
-cd ..
-python - <<'PY'
-from c2rag.configs.config import parse_args
-from c2rag.modules.Atomic_Constraint_Planning import main_query
-
-args = parse_args()
-main_query(args)
-PY
-```
-
-You can override planner endpoint settings with:
-- `--api_key`, `--base_url`, `--model_name`
-
-### 1: Structural Retrieval (Constraint-based)+Sufficiency Check+Binding Propagation
-
-Stage-1 consumes `query_json` and retrieves KG triples per constraint.
-
-```bash
-cd ..
-python -m c2rag.scripts.run_stage1 --dataset musique
-```
-
-implements:
-- **Anchor Matching**: match constraint entities to KG entities (`modules/anchor_matching.py`)
-- **Relation Alignment**: filter candidates by relation similarity (`modules/relation_alignment.py`)
-- **Contextual Reranking**: rerank candidates with a cross-encoder (`modules/contextual_reranking.py`)
-- **Sufficiency Check**: decide resolved/unresolved via `N_eff` (`modules/sufficiency_check.py`)
-- **Binding Propagation**: consolidate variable bindings and enforce consistency (`modules/binding_propagation.py`)
-
-Output: `stage1_json` (default: `result/<dataset>/stage1_<dataset>.json`).
-
-### 2. Textual Recovery + Evidence Assembly
-
-Stage-2 consumes Stage-1 outputs and builds **per-constraint evidence blocks**:
-
-- For **resolved** constraints, evidence is mapped back to dataset context (sentence/paragraph provenance).
-- For **unresolved/insufficient** constraints, Stage-2 retrieves evidence directly from raw documents.
-
-```bash
-cd ..
-python -m c2rag.scripts.run_stage2 --dataset musique
-```
-
-Output: `stage2_json` (default: `result/<dataset>/stage2_<dataset>.json`).
-
-### End-to-end (Stage-1 + Stage-2)
-
-```bash
-cd ..
-python -m c2rag.scripts.run --dataset musique
-```
+- Keep the backend terminal alive during active service.
+- First run may download required NLP/model dependencies.
+- Models remain in memory for low-latency inference.
+- If the browser is closed accidentally, reconnect to the local UI endpoint without restarting the backend.
 
 ---
 
-## Evaluation
+## 3. Repository Execution Flow (Code)
 
-The evaluation script uses Stage-2 evidence to generate an answer (via an OpenAI-compatible chat endpoint) and reports:
-
-- **QA EM** and **QA F1** (against gold answers)
-- **Retrieval recall@K** against dataset supports
-  - `2wiki`/`hotpotqa`: sentence-level supports (`(title, sent_idx)`)
-  - `musique`: paragraph-level supports (`paragraph_support_idx`)
-
-Run:
+Main entry:
 
 ```bash
-cd ..
-python -m c2rag.scripts.evaluation \
-  --dataset musique \
-  --stage2_json result/musique/stage2_musique.json \
-  --eval_output_json result/musique/eval.json
+python run.py --config configs/robustness_runner.yaml
 ```
 
-Common evaluation options:
-- `--api_key`, `--base_url`, `--model_name`: LLM endpoint for answer generation.
-- Prompt budgeting (if enabled in your config):
-  - `--prompt_max_triples`
-  - `--prompt_max_text_per_triple`
-- Recall reporting (if enabled):
-  - `--recall_k_list` (e.g., `2,5,10`)
+`run.py` sequentially invokes:
+
+1. `components/phase1_run.py`
+2. `components/phase2_run.py`
+3. `components/eval_run.py`
+
+Responsibilities:
+
+- **Phase1**: read `query plan + KG + dataset`, produce structural evidence and variable candidates (`phase1_evidence.json`).
+- **Phase2**: read phase1 outputs and recover unresolved constraints with text evidence (`phase2_evidence.json`).
+- **Evaluation**: generate final answers from phase2 evidence and compute EM/F1 (`qa_results_with_recall.json`).
+
+Primary configuration file:
+
+- `configs/robustness_runner.yaml`
+
+Commonly edited fields:
+
+- `run.dataset`, `run.max_samples`
+- `run_phase1`, `run_phase2`, `run_evaluation`
+- `paths.query_json`, `paths.data_json`, `paths.raw_data_json`, `paths.kg_path`, `paths.result_dir`
+- `global_env.OPENAI_API_KEY`, `global_env.OPENAI_BASE_URL`, `global_env.OPENAI_MODEL`
 
 ---
 
-## Outputs
+## 4. Example Assets: `KGs` and `planned_queries`
 
-By default (see `configs/config.py`):
+### 4.1 `KGs/` as runnable examples
 
-- `result/<dataset>/automic_query_<dataset>.json`: decomposed atomic constraint plans
-- `result/<dataset>/stage1_<dataset>.json`: selected structural KG evidence + bindings/debug metadata
-- `result/<dataset>/stage2_<dataset>.json`: per-constraint evidence blocks (input to evaluation)
-- `result/<dataset>/eval.json`: predictions + EM/F1 + recall (if enabled)
+Available example KGs:
 
+- `KGs/KG_2wiki`
+- `KGs/KG_hotpotqa`
+- `KGs/KG_musique`
+
+Each KG directory includes:
+
+- `entities.jsonl`
+- `triples.jsonl`
+- `title2entities.jsonl`
+- `title2triples.jsonl`
+
+These are project-provided runnable examples, aligned with the default model setting in `configs/robustness_runner.yaml`:
+
+- `OPENAI_MODEL = gpt-4o-mini`
+
+### 4.2 `planned_queries/` as runnable examples
+
+Available query-plan examples:
+
+- `planned_queries/2wiki_data`
+- `planned_queries/hotpotqa_data`
+- `planned_queries/musique_data`
+
+Files such as `query_graph_v8_*.json` can be used directly as Phase1 input.
+
+---
+
+## 5. Offline KG Perturbation Utility
+
+Script:
+
+- `tools/perturb_kg_offline.py`
+
+Purpose:
+
+Generate controlled noisy/incomplete KG variants from base KGs for robustness benchmarking.
+
+Supported capabilities:
+
+- issue-type-driven perturbation (e.g., `semantic_flip`, `mis_bound_relation`, `missing_bridge_edge`)
+- ratio sweep (`ratios`)
+- scope control (`global` or `query_subgraph`)
+- scenario composition (`combine_mode` + `issue_sets`)
+
+### 5.1 Command usage
+
+List perturbation scenarios under current config:
+
+```bash
+python tools/perturb_kg_offline.py --config configs/kg_perturb.yaml --list
+```
+
+Generate all configured scenarios:
+
+```bash
+python tools/perturb_kg_offline.py --config configs/kg_perturb.yaml
+```
+
+Override dataset from CLI:
+
+```bash
+python tools/perturb_kg_offline.py --config configs/kg_perturb.yaml --dataset 2wiki
+```
+
+Run selected scenario(s) (`--scenario` can be repeated):
+
+```bash
+python tools/perturb_kg_offline.py --config configs/kg_perturb.yaml --scenario semantic_flip
+```
+
+### 5.2 Key parameters (`configs/kg_perturb.yaml`)
+
+- `seed`: random seed
+- `output_root`: output root for perturbed KGs
+- `run.dataset`: default dataset key
+- `run.combine_mode`: scenario expansion mode (`cartesian` / `aligned`)
+- `run.ratios`: perturbation ratios
+- `run.scopes`: perturbation scopes (`global` / `query_subgraph`)
+- `run.issue_sets`: scenario definitions
+- `run.query_subgraph.*`: query-subgraph construction controls
+- `datasets.*.kg_dir`: base KG path per dataset
+- `datasets.*.query_json`: query-plan path per dataset
+- `issue_params.*`: issue-specific perturbation rules
+
+### 5.3 Output layout
+
+Default output structure:
+
+`output_root/<scenario_name>/<KG_dir_name>/`
+
+Typical files:
+
+- `entities.jsonl`
+- `triples.jsonl`
+- `title2entities.jsonl`
+- `title2triples.jsonl`
+- `perturb_meta.json` (configuration and perturbation statistics)
+
+---
+
+## 6. Regenerating `planned_queries`
+
+The query-plan builder script has been renamed:
+
+- old: `components/query_graph_builder_v8_universal_v2.py`
+- new: `components/query_plan_builder.py`
+
+Purpose:
+
+Use an LLM (default: `gpt-4o-mini`) to decompose raw questions into `query_plan`, then write to `planned_queries/.../query_graph_v8_*.json`.
+
+### 6.1 Run command
+
+```bash
+python components/query_plan_builder.py
+```
+
+### 6.2 Common environment variables
+
+- `DATASET`: `2wiki | hotpotqa | musique`
+- `DATA_PATH`: input dataset path
+- `OUTPUT_FILE`: output query-plan path
+- `NUM_SAMPLES`: number of examples
+- `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`
+
+PowerShell example:
+
+```powershell
+$env:DATASET="2wiki"
+$env:NUM_SAMPLES="1000"
+$env:OUTPUT_FILE="planned_queries/2wiki_data/query_graph_v8_2wiki.json"
+python components/query_plan_builder.py
+```
+
+---
+
+## 7. Recommended Reproduction Procedure
+
+1. Prepare/verify `planned_queries` (reuse examples or regenerate with `query_plan_builder.py`).
+2. Prepare base KG or generate perturbed KG with `perturb_kg_offline.py`.
+3. Configure paths, model endpoint, and output directory in `configs/robustness_runner.yaml`.
+4. Execute:
+
+```bash
+python run.py --config configs/robustness_runner.yaml
+```
+
+5. Check outputs under `paths.result_dir`:
+   - `phase1_evidence.json`
+   - `phase2_evidence.json`
+   - `qa_results_with_recall.json`
+   - `phase1.log`, `phase2.log`, `evaluation.log`
