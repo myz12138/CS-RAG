@@ -6,7 +6,7 @@
 
 This repository contains the reference implementation of the paper:
 
-**Toward Robust GraphRAG: Mitigating Retrieval Drift and Hallucination from Imperfect Knowledge Graphs** (NeurIPS 2026 submission).
+**Toward Robust GraphRAG: Mitigating Retrieval Drift and Hallucination from Imperfect Knowledge Graphs** (WWW 2027 submission).
 
 ## 1. Paper Overview ![Architecture of CS-RAG](./framework_PNG.png)
 
