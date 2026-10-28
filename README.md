@@ -2,6 +2,8 @@
 
 Source code for **Don't Worry About Quality: Robust Multi-Hop Retrieval despite Issues in Knowledge Graphs** (WWW 2027 manuscript).
 
+![CS-RAG framework](framework_PNG.png)
+
 ## Repository Structure
 
 ```text
