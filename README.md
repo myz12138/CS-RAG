@@ -198,7 +198,6 @@ Edit parameters in the configuration file passed to `run.py`. Parameter meanings
 
 We construct a companion web interface for managing documents and knowledge-base versions, exploring knowledge graphs, and performing multi-hop question answering. It brings document import, knowledge construction, retrieval, and answer inspection into one workspace, with access to supporting evidence and execution records. The specifical contents are in `../system/`.
 
-The screenshots below show a newly created project before documents are imported.
 
 **Knowledge overview**
 
