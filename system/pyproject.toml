@@ -1,0 +1,28 @@
+[project]
+name = "cs-rag-studio-rebuild"
+version = "0.1.0"
+description = "中文 CS-RAG 系统与外部算法接入层"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1.0",
+  "uvicorn[standard]>=0.30,<1.0",
+  "pydantic>=2.7,<3.0",
+  "python-multipart>=0.0.9,<1.0",
+]
+
+[tool.uv]
+package = false
+
+[project.optional-dependencies]
+vector = [
+  "qdrant-client>=1.14,<2.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<9.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["backend/tests"]

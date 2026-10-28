@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Phase-1 thin entrypoint.
-
-Behavior is unchanged: delegates to the legacy implementation through the
-modular pipeline package.
-"""
+"""Run Phase 1 structural retrieval."""
 
 from pathlib import Path
 import sys

@@ -3,11 +3,7 @@ paths:
   hotpot_dev:  ./hotpot_data/hotpot_dev_distractor_v1.json
 
 embed:
-  # If EMB_ENDPOINT/EMB_API_KEY are set, we'll use remote embeddings (OpenAI-compatible).
-  # Otherwise, we fallback to sentence-transformers locally.
   model: sentence-transformers/all-MiniLM-L6-v2
-  #text-embedding-3-small
-  #sentence-transformers/all-MiniLM-L6-v2
   device: cuda:0
 
 seedkg:
@@ -23,7 +19,7 @@ model:
   vkg_hidden: 256
 
 train:
-  lr_gnn: 2e-4              # 若 freeze_gnn=false 生效
+  lr_gnn: 2e-4
   lr_prompt: 2e-4
   epochs_scorer: 3
   print_every: 10
@@ -44,14 +40,14 @@ loss:
 vkg_dir: ./artifacts/vkg
 
 scorer:
-  tau_w: 0.25    # 推断建议和训练一致，偏大一点更平滑；如训练是 0.15，这里也可 0.15
+  tau_w: 0.25
 mapper:
-  tau_map: 0.10  # 同上，和训练一致
+  tau_map: 0.10
 
 infer:
-  alpha: 1.0     # 单点软聚合权重
-  beta:  1.0     # 1-hop 路径权重
-  gamma: 0.5     # 2-hop 路径权重
+  alpha: 1.0
+  beta:  1.0
+  gamma: 0.5
 
 
 

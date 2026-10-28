@@ -6,8 +6,8 @@ import torch
 
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from data.hotpot import load_hotpot, to_chunks
-from llm_utils import LLMClient
+from utils.text import to_chunks
+from utils.llm import LLMClient
 
 try:
     from tqdm import tqdm

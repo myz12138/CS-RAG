@@ -1,0 +1,23 @@
+{
+  "service": {
+    "name": "CS-RAG API",
+    "version": "0.1.0",
+    "mode": "local",
+    "host": "127.0.0.1",
+    "port": 8000
+  },
+  "storage": {
+    "data_root": "data"
+  },
+  "algorithm": {
+    "reference": "..",
+    "reference_commit": ""
+  },
+  "model": {
+    "base_url": "",
+    "api_key_env": "CS_RAG_MODEL_API_KEY",
+    "model": "gpt-4o-mini",
+    "embedding_model": "BAAI/bge-small-zh-v1.5",
+    "reranker_model": "BAAI/bge-reranker-v2-m3"
+  }
+}

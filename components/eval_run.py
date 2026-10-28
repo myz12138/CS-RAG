@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import re
 import string
@@ -15,21 +15,21 @@ MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 DEFAULTS = {
     "2wiki": {
         "DATA_JSON": "dataset/2wikimultihopqa.json",
-        "PHASE2_JSON": "planned_queries/2wiki_data/phase2_evidence_v8_2wiki.json",
-        "PHASE1_JSON": "planned_queries/2wiki_data/phase1_evidence_v8_2wiki.json",
-        "OUTPUT_JSON": "planned_queries/2wiki_data/qa_results_with_recall_v8_2wiki.json",
+        "PHASE2_JSON": "planner_queries/2wiki_data/phase2_evidence_v8_2wiki.json",
+        "PHASE1_JSON": "planner_queries/2wiki_data/phase1_evidence_v8_2wiki.json",
+        "OUTPUT_JSON": "planner_queries/2wiki_data/qa_results_with_recall_v8_2wiki.json",
     },
     "hotpotqa": {
         "DATA_JSON": "dataset/hotpotqa.json",
-        "PHASE2_JSON": "planned_queries/hotpotqa_data/phase2_evidence_v8_hotpotqa.json",
-        "PHASE1_JSON": "planned_queries/hotpotqa_data/phase1_evidence_v8_hotpotqa.json",
-        "OUTPUT_JSON": "planned_queries/hotpotqa_data/qa_results_with_recall_v8_hotpotqa.json",
+        "PHASE2_JSON": "planner_queries/hotpotqa_data/phase2_evidence_v8_hotpotqa.json",
+        "PHASE1_JSON": "planner_queries/hotpotqa_data/phase1_evidence_v8_hotpotqa.json",
+        "OUTPUT_JSON": "planner_queries/hotpotqa_data/qa_results_with_recall_v8_hotpotqa.json",
     },
     "musique": {
         "DATA_JSON": "dataset/musique.json",
-        "PHASE2_JSON": "planned_queries/musique_data/phase2_evidence_v8_musique.json",
-        "PHASE1_JSON": "planned_queries/musique_data/phase1_evidence_v8_musique.json",
-        "OUTPUT_JSON": "planned_queries/musique_data/qa_results_with_recall_v8_musique.json",
+        "PHASE2_JSON": "planner_queries/musique_data/phase2_evidence_v8_musique.json",
+        "PHASE1_JSON": "planner_queries/musique_data/phase1_evidence_v8_musique.json",
+        "OUTPUT_JSON": "planner_queries/musique_data/qa_results_with_recall_v8_musique.json",
     },
 }
 
@@ -43,11 +43,9 @@ OUTPUT_JSON = os.getenv("OUTPUT_JSON", DEFAULTS[DATASET]["OUTPUT_JSON"])
 MAX_SAMPLES = int(os.getenv("MAX_SAMPLES", "1000"))
 GT_SET_FILE_2WIKI = os.getenv(
     "GT_SET_FILE_2WIKI",
-    "planned_queries/2wiki_data/ground_truth_answer_set_v8_2wiki.json",
+    "",
 )
 
-PROMPT_MAX_TRIPLES = int(os.getenv("PROMPT_MAX_TRIPLES", "20"))
-PROMPT_MAX_TEXT_PER_TRIPLE = int(os.getenv("PROMPT_MAX_TEXT_PER_TRIPLE", "8"))
 
 
 def build_client():
@@ -136,7 +134,6 @@ def load_2wiki_gt_set_map(path):
         data = json.load(f)
 
     # with open(path, "r", encoding="utf-8") as f:
-    #     data = json.load(f)
     if not isinstance(data, list):
         raise ValueError("GT_SET_FILE_2WIKI must be a JSON list.")
 
@@ -170,74 +167,47 @@ def _format_triple(t):
 
 
 def build_prompt_from_phase2_item(item):
-    """
-    Phase-2 item format assumption (as you specified):
-      - item has: id, question, ground_truth_answer
-      - item["triples_evidence"] is a list; each element corresponds to one decomposed query triple and contains:
-          * query_triple, query_triple_index, triple_status
-          * if triple_status == "resolved": kg_triples is non-empty
-          * if triple_status == "unresolved": candidate_evidences is non-empty (text evidences)
-
-    We generate a single prompt by listing the decomposed query triples and, for each, the corresponding evidence set.
-    """
+    """Build a QA prompt from constraint-aligned text evidence."""
     question = str(item.get("question", "") or "").strip()
     triples_evidence = item["triples_evidence"]
-
     intro = (
-        "You are a strict multi hop inference assistant that can complete multi hop inference based on given information."
-"Now, you need to conduct rigorous and rational multi-step thinking based on the given search evidence to answer this question. You only need to use the given information to answer the question."
-"We decomposed the problem and generated multiple subqueries, and retrieved several relevant evidence for each subquery for you to think and reason about the answer step by step."
-"You need to choose the most suitable evidence content as much as possible to solve this unknown tuple, and further deduce the next unknown tuple based on the solved content until you answer the question."
-"You can only answer the final answer with short and appropriate phrases (such as names, numbers, or short noun phrases that conform to the question format). Do not include explanations, sentences, or any other words."
-"Here is the information you can obtain:"
-
+        "You are a strict multi hop inference assistant that can complete multi hop inference based on given information. "
+        "Now, you need to conduct rigorous and rational multi-step thinking based on the given search evidence to answer this query. "
+        "You only need to use the given information to answer the query. "
+        "We perform Atomic Constraint Planning and obtain multiple atomic constraints. "
+        "For each atomic constraint, several pieces of relevant evidence are retrieved. "
+        "You should use the provided evidence to resolve the variables in the atomic constraints step by step, and derive the final answer. "
+        "You can only answer the final answer with short and appropriate phrases (such as names, numbers, or short noun phrases that conform to the query format). "
+        "Do not include explanations, sentences, or any other words. "
+        "Here is the information you can obtain:"
     )
-
-    dec_lines = []
-    for te in triples_evidence[:PROMPT_MAX_TRIPLES]:
-        qi = int(te["query_triple_index"])
-        qt = _format_triple(te["query_triple"])
-        dec_lines.append(f"T{qi} {qt}")
-    dec_block = "\n".join(dec_lines)
-
     ev_lines = []
     for te in triples_evidence:
         qi = int(te["query_triple_index"])
-        qt = _format_triple(te["query_triple"])
-        status = str(te["triple_status"]).strip().lower()
-
-        ev_lines.append(f"T{qi}: {qt}")
-        # if status == "resolved":
-        #     ev_lines.append(" The unknown entity of this tuple has been resolved and is an item in the candidate set:")
-            
-        #     for kt in (te["kg_triples"] or []):
-        #         ev_lines.append(f"    - {_format_triple(kt)}")
-        # else:
-        ev_lines.append("  Text evidence:")
-        for i, ev in enumerate((te["candidate_evidences"] or [])[:PROMPT_MAX_TEXT_PER_TRIPLE], start=1):
-            title = str(ev.get("title", "") or "").strip()
+        qt = _format_triple(te["query_triple"]).replace(" | ", " — ")
+        ev_lines.append(f"τ{qi}: {qt}")
+        for i, ev in enumerate(te["candidate_evidences"] or [], start=1):
             ctx = normalize_whitespace(ev.get("context")).strip()
-            # if title:
-            #     ev_lines.append(f"    Evidence {i}: From {title}: {ctx}")
-            # else:
-            ev_lines.append(f"    Evidence {i}: {ctx}")
-
-    ev_block = "\n".join(ev_lines)
-
+            ev_lines.append(f"  Evidence {i}: {ctx}")
+        ev_lines.append("")
+    ev_block = "\n".join(ev_lines).strip()
     body = (
-        f"Question: {question}\n\n"
-        f"The query tuple after problem decomposition is as follows: (where the relationship is an approximate query relationship related to the semantics of the problem, and the entity is an unknown entity type that needs to be solved based on the provided evidence, not the true answer).\n"
-        f"For each decomposed query triple, the retrieved evidence is as follows:\n{ev_block}\n\n"
-        f"Based on the above information, answer the question.\n\n"
-        f"Question: {question} Answer:"
-    ) 
-
-    return intro + "\n" + body
+        f"Query: {question}\n\n"
+        "The atomic constraint plan is as follows. Each atomic constraint contains an approximate relation expression "
+        "and a variable that should be resolved using the retrieved evidence. "
+        f"For each atomic constraint, the retrieved evidence is provided below:\n\n{ev_block}\n\n"
+        "Based on the above information, answer the query.\n\n"
+        f"Query: {question} Answer:"
+    )
+    return intro + "\n\n" + body
 
 
 def compute_resolved_triple_ratio(item):
     triples = item.get("triples_evidence", []) or []
     if not isinstance(triples, list) or not triples:
+        return 0.0
+    triples = [te for te in triples if te.get("sufficiency_checked", False)]
+    if not triples:
         return 0.0
     resolved = 0
     for te in triples:
@@ -245,6 +215,31 @@ def compute_resolved_triple_ratio(item):
         if st == "resolved":
             resolved += 1
     return float(resolved) / float(len(triples))
+
+
+def compute_recall_at_5(item, ex):
+    if DATASET == "musique":
+        gold = {str(p["idx"]) for p in ex.get("paragraphs", []) if p.get("is_supporting")}
+    else:
+        gold = {str(fact[0]).strip() for fact in ex.get("supporting_facts", []) if isinstance(fact, (list, tuple)) and fact}
+    scores = {}
+    for te in item.get("triples_evidence", []):
+        for ev in te.get("candidate_evidences", []):
+            if DATASET == "musique":
+                key = ev.get("paragraph_idx")
+                if key is None:
+                    raise ValueError("MuSiQue paragraph idx is missing. Run phase2 again.")
+                key = str(key)
+            else:
+                key = str(ev.get("title") or "").strip()
+            if not key:
+                continue
+            score = ev.get("similarity")
+            if score is None:
+                raise ValueError("Evidence score is missing. Run phase1 and phase2 again.")
+            scores[key] = max(scores.get(key, float("-inf")), float(score))
+    ranked = sorted(scores, key=lambda key: (-scores[key], key))[:5]
+    return len(set(ranked) & gold) / len(gold) if gold else 0.0
 
 
 def is_prediction_supported_by_evidence(prediction, item):
@@ -301,10 +296,16 @@ def main_ev():
         items = items[:MAX_SAMPLES]
 
     gt_set_map_2wiki = {}
-    if DATASET == "2wiki":
+    if DATASET == "2wiki" and os.path.isfile(GT_SET_FILE_2WIKI):
         gt_set_map_2wiki = load_2wiki_gt_set_map(GT_SET_FILE_2WIKI)
 
+    raw_by_id = {}
+    if DATASET in ("2wiki", "hotpotqa", "musique"):
+        with open(DATA_JSON, "r", encoding="utf-8") as f:
+            raw_by_id = {str(ex.get("_id") or ex.get("id")): ex for ex in json.load(f)}
+
     outputs = []
+    total_recall = 0.0
     total_em = 0.0
     total_f1 = 0.0
     n = 0
@@ -327,17 +328,7 @@ def main_ev():
 
         resp = client.chat.completions.create(
             model=MODEL_NAME,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a careful question answering assistant. "
-                        "Always ground your answers strictly in the provided evidences, "
-                        "and do not use outside knowledge."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
         )
         pred = (resp.choices[0].message.content or "").strip()
@@ -371,6 +362,11 @@ def main_ev():
         if DATASET == "2wiki":
             out_item["ground_truth_answer_set"] = gold_set
             out_item["best_matched_ground_truth"] = best_gt
+        if DATASET in ("2wiki", "hotpotqa", "musique"):
+            if qid not in raw_by_id:
+                raise ValueError(f"Missing gold evidence for query {qid}")
+            out_item["recall@5"] = compute_recall_at_5(item, raw_by_id[qid])
+            total_recall += out_item["recall@5"]
         outputs.append(out_item)
 
     overall_em = total_em / n if n else 0.0
@@ -378,6 +374,8 @@ def main_ev():
 
     print(f"Overall EM: {overall_em:.4f}")
     print(f"Overall F1: {overall_f1:.4f}")
+    if DATASET in ("2wiki", "hotpotqa", "musique"):
+        print(f"Overall Recall@5: {total_recall / n if n else 0.0:.4f}")
 
     out_dir = os.path.dirname(OUTPUT_JSON)
     if out_dir:

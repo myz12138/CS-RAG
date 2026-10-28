@@ -6,7 +6,7 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from data.hotpot import to_chunks
+from utils.text import to_chunks
 from utils.llm import LLMClient
 
 try:

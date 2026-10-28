@@ -1,0 +1,20 @@
+/* The global context is a single aligned control group, not independent flex items. */
+.app-shell .workspace-header { display: grid; grid-template-columns: minmax(160px,1fr) auto; gap: 24px; align-items: center; }
+.workspace-header .workspace-context { display: grid; grid-template-columns: minmax(120px,160px) minmax(135px,170px) 44px auto; align-items: end; gap: 10px; width: auto; flex: initial; }
+.workspace-header .workspace-context label { min-width: 0; font-size: 13px; gap: 7px; }
+.workspace-header .workspace-context select { min-width: 0; width: 100%; max-width: none; margin: 0; }
+.workspace-header .topbar-title h1 { font-size: 25px; }
+.workspace-header .topbar-title p { display: none; }
+@media (max-width: 1250px) {
+  .app-shell .workspace-header { grid-template-columns: 1fr; gap: 18px; }
+  .workspace-header .workspace-context { grid-template-columns: minmax(0,1fr) minmax(0,1fr) 44px auto; }
+}
+.content-wrap .panel-header { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 16px; }
+.content-wrap .panel-header > div { min-width: 0; }
+.content-wrap .panel-header h2 { margin: 0; }
+.content-wrap .panel-header > :is(button,span) { justify-self: end; }
+@media (max-width: 520px) {
+  .workspace-header .workspace-context { grid-template-columns: minmax(0,1fr) minmax(0,1fr) 40px 40px; gap: 8px; }
+  .workspace-header .icon-button, .workspace-header .new-project-button { width: 40px; min-width: 40px; padding: 0; }
+  .workspace-header .new-project-button { font-size: 0; }.workspace-header .new-project-button svg { width: 19px; height: 19px; }
+}

@@ -7,7 +7,7 @@
 
     "combine_mode": "cartesian",
     "ratios": [0.1, 0.2,0.3,0.4,0.5],
-    "scopes": ["query_subgraph","global"], #"global"
+    "scopes": ["query_subgraph","global"],
     "include_clean_copy": false,
     "selected_scenarios": [],
     "final_sanitize": false,
@@ -55,15 +55,15 @@
   "datasets": {
     "2wiki": {
       "kg_dir": "KGs/KG_2wiki",
-      "query_json": "planned_queries/2wiki_data/query_graph_v8_2wiki.json"
+      "query_json": "planner_queries/2wiki_data/query_graph_2wiki.json"
     },
     "hotpotqa": {
       "kg_dir": "KGs/KG_hotpotqa",
-      "query_json": "planned_queries/hotpotqa_data/query_graph_v8_hotpotqa.json"
+      "query_json": "planner_queries/hotpotqa_data/query_graph_hotpotqa.json"
     },
     "musique": {
       "kg_dir": "KGs/KG_musique",
-      "query_json": "planned_queries/musique_data/query_graph_v8_musique.json"
+      "query_json": "planner_queries/musique_data/query_graph_musique.json"
     }
   },
 

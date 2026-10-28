@@ -1,328 +1,211 @@
 # CS-RAG
 
-![Windows](https://img.shields.io/badge/Platform-Windows-blue?logo=windows)
-![Local](https://img.shields.io/badge/Deployment-100%25_Local-brightgreen)
-![Status](https://img.shields.io/badge/Status-Stable_v1.1-orange)
+Source code for **Don't Worry About Quality: Robust Multi-Hop Retrieval despite Issues in Knowledge Graphs** (WWW 2027 manuscript).
 
-This repository contains the reference implementation of the paper:
+## Repository Structure
 
-**Toward Robust GraphRAG: Mitigating Retrieval Drift and Hallucination from Imperfect Knowledge Graphs** (WWW 2027 submission).
-
-## 1. Paper Overview ![Architecture of CS-RAG](./framework_PNG.png)
-
-In multi-hop QA, practical Knowledge Graphs are often imperfect and induce two major failure modes:
-
-- **Retrieval Drift**: noisy KG edges gradually divert the reasoning trajectory.
-- **Retrieval Hallucination**: key KG evidence is missing, so the system can keep traversing structure without sufficient support.
-
-The core contribution of this work is to make multi-hop reasoning robust under these conditions:
-
-1. Convert complex questions into traceable query constraints (`query_plan`) and perform constraint-level structured retrieval to reduce drift.
-2. Apply sufficiency checking to discriminate between sufficiently resolved and unresolved constraints, then use binding propagation for resolved parts and text recovery for unresolved parts.
-
-The end-to-end logic is organized as:
-
-`Query Plan -> Phase1 (Structured Constraint Retrieval) -> Phase2 (Text Recovery for Unresolved Constraints) -> Evaluation`
-
----
-
-## 2. CS-RAG Workflow System Guide (Desktop)
-
-This section integrates the complete workflow-oriented system guide and aligns all terminology to **CS-RAG**. Thanks for our co-worker. [Jinchuan Xu](https://github.com/203824552)
-
-### 2.1 Core Features
-
-- **Zero-Configuration Runtime**: Built-in deep learning runtime (PyTorch/Transformers). In desktop release mode, launching the executable starts both backend terminal and Web UI.
-- **100% Data Privacy (Local-First)**: Compatible with local LLM serving via OpenAI-style API format (e.g., vLLM/Ollama adapters). Dense vector indexing remains local.
-- **Anti-Hallucination Retrieval**: A robust multi-stage pipeline with Neff-based sufficiency checking and automatic `Text Fallback` retrieval when graph evidence is insufficient.
-- **Robust Data Management**:
-  - Sentence-level MD5 deduplication to block redundant ingestion.
-  - Timestamped source archiving for traceability.
-- **Glass-Box Observability**: Intermediate decomposition, retrieval, reranking, and evidence decisions are explicitly exposed for analysis.
-
-### 2.2 Download
-
-The packaged desktop system (including runtime dependencies and offline model assets) is approximately **2.44 GB**.
-
-- **[Download CS-RAG Workflow v1.1 (Windows)](https://huggingface.co/203824552xjc/GraphRAG-Studio-Release/resolve/main/GraphRAG_Studio_v1.1_Windows.zip?download=true)**
-
-If download speed is limited in your region, using a download manager is recommended.
-
-### 2.3 Quick Start
-
-#### Step 1: Initialization
-
-Extract the package to an English-only path (for example: `D:\CS-RAG_Workflow`) and launch the executable. The backend terminal opens first, then the browser UI is available at `http://127.0.0.1:8866`.
-
-On first launch, the system auto-generates runtime directories next to the executable:
-
-- `workspace/`: local cache for KG JSON files, entity dictionaries, and dense vector indexes.
-- `data_input/`: immutable archive for uploaded `.txt` sources (with timestamping).
-- `models/`: offline cache for embedding/reranker models.
-- `config.json`: runtime configuration; auto-regenerated if accidentally removed.
-
-#### Step 2: System Configuration
-
-![CS-RAG Configuration](https://github.com/user-attachments/assets/97f88902-f28f-43b4-8931-ddb7fabe41a2)
-
-In the **Configuration** tab:
-
-1. **LLM Settings**
-   - Configure `Base URL`, `Model Name`, and `API Key`.
-   - Supports both cloud APIs and local OpenAI-format serving endpoints.
-
-2. **Retrieval Parameters**
-   - **Top-N**: maximum evidence snippets sent to the final answer model.
-   - **Entity / Fallback K**: recall depth for graph traversal and text fallback.
-   - **Neff Threshold**: topology entropy threshold for evidence sufficiency control.
-
-After clicking **Save**, parameter updates are applied in-memory immediately (no service restart required).
-
-#### Step 3: Knowledge Base Construction
-
-![CS-RAG KG Construction](https://github.com/user-attachments/assets/7e95027a-0f15-4c28-80c1-6602965b31fd)
-
-In the **KG Construction** tab:
-
-1. **Project Management**
-   - Create a new project or select an existing project.
-
-2. **Build Modes**
-   - **Fresh Build**: reset graph/vector indexes for the selected project.
-   - **Incremental Merging**: append new knowledge to an existing project.
-   - Sentence-level MD5 deduplication is applied to prevent duplicate ingestion.
-
-3. **Automated Pipeline**
-   - Upload `.txt` files or paste text.
-   - Click **Start Building** for chunking, graph extraction, and vector indexing.
-   - After completion, the right panel renders a graph preview (top core nodes for browser stability).
-
-4. **Vector Refresh**
-   - If embedding model settings are changed, vector index can be rebuilt from cached text without rerunning extraction.
-
-#### Step 4: Multi-hop QA and Reasoning
-
-![CS-RAG Multi-hop QA](https://github.com/user-attachments/assets/f43bec92-3253-47f1-8b3b-0e8aa64eee8d)
-
-In the **Multi-hop QA** tab:
-
-1. **Transparent Execution**
-   - Submit a multi-hop question and track pipeline progress in backend logs.
-
-2. **Grounded Answer + Evidence Chain**
-   - The system returns concise answers and explicit evidence provenance (`[KG]` vs `[Text]`).
-
-3. **Activated Reasoning Subgraph**
-   - The panel highlights the activated reasoning nodes/paths for explainability.
-
-### 2.4 Glass-Box Analysis Dashboard
-
-![CS-RAG Glass-Box Dashboard](https://github.com/user-attachments/assets/f936e1a0-67a8-4a40-998b-8c112827fd28)
-
-The dashboard provides synchronized introspection of the internal pipeline:
-
-- **Phase 1 (Logical Skeleton Decomposition)**: decomposes complex query into atomic triples.
-- **Phase 2 (Graph Coarse Ranking & Neff Entropy)**: evaluates graph evidence sufficiency; unresolved/high-entropy cases trigger text fallback.
-- **Phase 3 (Evidence Re-ranking Top-K)**: displays recalled evidence with similarity scores and detailed context view.
-
-### 2.5 System Mechanics and Operational Details
-
-- **Backend Terminal**: the terminal is the active backend runtime; closing it terminates the service.
-- **First-Run Dependency Download**: initial execution may fetch tokenizer/model resources.
-- **Memory Residency**: models remain loaded for low-latency QA.
-- **Graceful Shutdown**: use the UI stop operation (if provided by desktop build) to safely release memory/resources.
-- **Session Recovery**: if browser closes accidentally, reconnect to `http://127.0.0.1:8866` without restarting backend.
-
----
-
-## 3. Repository Execution Flow (Code)
-
-Main entry:
-
-```bash
-python run.py --config configs/robustness_runner.yaml
+```text
+CS-RAG-reference/
+|-- run.py                         Pipeline entry point
+|-- configs/                       Execution and experiment configurations
+|   `-- robustness_runner.yaml     Dataset paths, models, stages, and retrieval parameters
+|-- components/
+|   |-- query_plan_builder.py      LLM-based query planning
+|   |-- phase1_run.py              Structural retrieval entry point
+|   |-- phase1/                    Structural retrieval
+|   |-- phase2_run.py              Text retrieval entry point
+|   |-- phase2/                    Text retrieval
+|   `-- eval_run.py                Answer generation and evaluation
+|-- dataset/                       Raw questions, candidate passages, and gold annotations
+|-- KGs/                           Extracted knowledge graphs
+|-- planner_queries/               Saved query-planning results
+|   |-- hotpotqa_data/              HotpotQA plans
+|   |-- 2wiki_data/                 2WikiMultihopQA plans
+|   `-- musique_data/               MuSiQue plans
+|-- kg_extractors/                 KG construction scripts
+|-- utils/                         Shared LLM, embedding, and metric utilities
+|-- tools/                         Offline experiment utilities
+`-- docs/paper_supplement/          Prompt templates and supplementary material
 ```
 
-`run.py` sequentially invokes:
+Run KG construction, query planning, then `run.py` for retrieval and QA evaluation.
 
-1. `components/phase1_run.py`
-2. `components/phase2_run.py`
-3. `components/eval_run.py`
+## Environment
 
-Responsibilities:
+Current environment: Python 3.14.5. Required packages:
 
-- **Phase1**: read `query plan + KG + dataset`, produce structural evidence and variable candidates (`phase1_evidence.json`).
-- **Phase2**: read phase1 outputs and recover unresolved constraints with text evidence (`phase2_evidence.json`).
-- **Evaluation**: generate final answers from phase2 evidence and compute EM/F1 (`qa_results_with_recall.json`).
-
-Primary configuration file:
-
-- `configs/robustness_runner.yaml`
-
-Commonly edited fields:
-
-- `run.dataset`, `run.max_samples`
-- `run_phase1`, `run_phase2`, `run_evaluation`
-- `paths.query_json`, `paths.data_json`, `paths.raw_data_json`, `paths.kg_path`, `paths.result_dir`
-- `global_env.OPENAI_API_KEY`, `global_env.OPENAI_BASE_URL`, `global_env.OPENAI_MODEL`
-
----
-
-## 4. Example Assets: `KGs` and `planned_queries`
-
-### 4.1 `KGs/` as runnable examples
-
-Available example KGs:
-
-- `KGs/KG_2wiki`
-- `KGs/KG_hotpotqa`
-- `KGs/KG_musique`
-
-Each KG directory includes:
-
-- `entities.jsonl`
-- `triples.jsonl`
-- `title2entities.jsonl`
-- `title2triples.jsonl`
-
-These are project-provided runnable examples, aligned with the default model setting in `configs/robustness_runner.yaml`:
-
-- `OPENAI_MODEL = gpt-4o-mini`
-
-### 4.2 `planned_queries/` as runnable examples
-
-Available query-plan examples:
-
-- `planned_queries/2wiki_data`
-- `planned_queries/hotpotqa_data`
-- `planned_queries/musique_data`
-
-Files such as `query_graph_v8_*.json` can be used directly as Phase1 input.
-
----
-
-## 5. Offline KG Perturbation Utility
-
-Script:
-
-- `tools/perturb_kg_offline.py`
-
-Purpose:
-
-Generate controlled noisy/incomplete KG variants from base KGs for robustness benchmarking.
-
-Supported capabilities:
-
-- issue-type-driven perturbation (e.g., `semantic_flip`, `mis_bound_relation`, `missing_bridge_edge`)
-- ratio sweep (`ratios`)
-- scope control (`global` or `query_subgraph`)
-- scenario composition (`combine_mode` + `issue_sets`)
-
-### 5.1 Command usage
-
-List perturbation scenarios under current config:
-
-```bash
-python tools/perturb_kg_offline.py --config configs/kg_perturb.yaml --list
+```text
+torch==2.14.0
+transformers==5.16.1
+sentence-transformers==6.0.1
+numpy==2.5.3
+openai==3.8.0
+tqdm==4.70.0
+PyYAML==6.0.3
+requests==2.34.2
 ```
 
-Generate all configured scenarios:
+Optional local model serving: vLLM in a separate Linux/WSL2 environment.
 
-```bash
-python tools/perturb_kg_offline.py --config configs/kg_perturb.yaml
-```
+## HotpotQA Demo
 
-Override dataset from CLI:
+The following commands start from `dataset/hotpotqa.json`, construct a new KG, generate query plans, and run retrieval and QA evaluation. Run all commands from the repository root in the same PowerShell session.
 
-```bash
-python tools/perturb_kg_offline.py --config configs/kg_perturb.yaml --dataset 2wiki
-```
+### 1. Choose the KG Builder
 
-Run selected scenario(s) (`--scenario` can be repeated):
+Use either a remote API or a locally served model. Both options use the same KG extraction commands in step 2.
 
-```bash
-python tools/perturb_kg_offline.py --config configs/kg_perturb.yaml --scenario semantic_flip
-```
-
-### 5.2 Key parameters (`configs/kg_perturb.yaml`)
-
-- `seed`: random seed
-- `output_root`: output root for perturbed KGs
-- `run.dataset`: default dataset key
-- `run.combine_mode`: scenario expansion mode (`cartesian` / `aligned`)
-- `run.ratios`: perturbation ratios
-- `run.scopes`: perturbation scopes (`global` / `query_subgraph`)
-- `run.issue_sets`: scenario definitions
-- `run.query_subgraph.*`: query-subgraph construction controls
-- `datasets.*.kg_dir`: base KG path per dataset
-- `datasets.*.query_json`: query-plan path per dataset
-- `issue_params.*`: issue-specific perturbation rules
-
-### 5.3 Output layout
-
-Default output structure:
-
-`output_root/<scenario_name>/<KG_dir_name>/`
-
-Typical files:
-
-- `entities.jsonl`
-- `triples.jsonl`
-- `title2entities.jsonl`
-- `title2triples.jsonl`
-- `perturb_meta.json` (configuration and perturbation statistics)
-
----
-
-## 6. Regenerating `planned_queries`
-
-The query-plan builder script has been renamed:
-
-- old: `components/query_graph_builder_v8_universal_v2.py`
-- new: `components/query_plan_builder.py`
-
-Purpose:
-
-Use an LLM (default: `gpt-4o-mini`) to decompose raw questions into `query_plan`, then write to `planned_queries/.../query_graph_v8_*.json`.
-
-### 6.1 Run command
-
-```bash
-python components/query_plan_builder.py
-```
-
-### 6.2 Common environment variables
-
-- `DATASET`: `2wiki | hotpotqa | musique`
-- `DATA_PATH`: input dataset path
-- `OUTPUT_FILE`: output query-plan path
-- `NUM_SAMPLES`: number of examples
-- `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`
-
-PowerShell example:
+#### Remote API
 
 ```powershell
-$env:DATASET="2wiki"
-$env:NUM_SAMPLES="1000"
-$env:OUTPUT_FILE="planned_queries/2wiki_data/query_graph_v8_2wiki.json"
+$sampleCount = 1000
+$env:OPENAI_API_KEY = "YOUR_API_KEY"
+$env:OPENAI_BASE_URL = "YOUR_API_BASE_URL/v1"
+$env:LLM_API_KEY = $env:OPENAI_API_KEY
+$env:LLM_ENDPOINT = $env:OPENAI_BASE_URL
+$env:LLM_BACKEND = "api"
+$env:LLM_MODEL = "YOUR_KG_BUILDER_MODEL"
+$env:OPENAI_MODEL = "YOUR_PLANNER_MODEL"
+```
+
+Replace the API and model placeholders. Use the same question count throughout the demo.
+
+#### Local Qwen3-14B
+
+Start the model service in Linux or WSL2:
+
+```bash
+vllm serve /path/to/Qwen3-14B --served-model-name qwen3-14b --host 127.0.0.1 --port 8000
+```
+
+Keep the server running. In the PowerShell session used for KG construction, select it with:
+
+```powershell
+$sampleCount = 1000
+$env:LLM_BACKEND = "local"
+$env:LLM_ENDPOINT = "http://127.0.0.1:8000/v1"
+$env:LLM_MODEL = "qwen3-14b"
+```
+
+Keep the server running and replace the model path with your local directory. Set `LLM_LOCAL_API_KEY` if the server requires authentication.
+
+### 2. Construct the KG
+
+```powershell
+python kg_extractors/llm_builder_hotpotqa.py `
+  --data dataset/hotpotqa.json `
+  --config configs/hotpot_local.yaml `
+  --num_examples $sampleCount `
+  --out KGs/KG_hotpotqa_demo
+```
+
+KG files are saved to `KGs/KG_hotpotqa_demo/`.
+
+#### Use the Provided KG
+
+To use the included HotpotQA KG, skip steps 1 and 2. Set the question count and continue with step 3:
+
+```powershell
+$sampleCount = 1000
+```
+
+In step 4, set `paths.kg_path` to `KGs/KG_hotpotqa` instead of `KGs/KG_hotpotqa_demo`. Use the provided query plans or generate new ones in step 3.
+
+### 3. Generate Query Plans
+
+Configure the planner API independently of the KG builder:
+
+```powershell
+$env:OPENAI_API_KEY = "YOUR_API_KEY"
+$env:OPENAI_BASE_URL = "YOUR_API_BASE_URL/v1"
+$env:OPENAI_MODEL = "YOUR_PLANNER_MODEL"
+$env:DATASET = "hotpotqa"
+$env:DATA_PATH = "dataset/hotpotqa.json"
+$env:OUTPUT_FILE = "planner_queries/hotpotqa_data/query_graph_hotpotqa_demo.json"
+$env:NUM_SAMPLES = "$sampleCount"
 python components/query_plan_builder.py
 ```
 
----
+#### Use the Provided Query Plans
 
-## 7. Recommended Reproduction Procedure
+To reuse the included HotpotQA plans, skip step 3 and set `paths.query_json` to `planner_queries/hotpotqa_data/query_graph_hotpotqa.json` in step 4.
 
-1. Prepare/verify `planned_queries` (reuse examples or regenerate with `query_plan_builder.py`).
-2. Prepare base KG or generate perturbed KG with `perturb_kg_offline.py`.
-3. Configure paths, model endpoint, and output directory in `configs/robustness_runner.yaml`.
-4. Execute:
+### 4. Configure Retrieval and Evaluation
 
-```bash
-python run.py --config configs/robustness_runner.yaml
+Copy the execution configuration:
+
+```powershell
+Copy-Item configs/robustness_runner.yaml configs/hotpotqa_demo.yaml
 ```
 
-5. Check outputs under `paths.result_dir`:
-   - `phase1_evidence.json`
-   - `phase2_evidence.json`
-   - `qa_results_with_recall.json`
-   - `phase1.log`, `phase2.log`, `evaluation.log`
+In `configs/hotpotqa_demo.yaml`, update the following fields while retaining the other configuration entries:
+
+| Field | Demo value |
+| --- | --- |
+| `run.dataset` | `hotpotqa` |
+| `run.max_samples` | The question count used in `$sampleCount` |
+| `paths.raw_data_json` | `dataset/hotpotqa.json` |
+| `paths.data_json` | `dataset/hotpotqa.json` |
+| `paths.query_json` | `planner_queries/hotpotqa_data/query_graph_hotpotqa_demo.json` |
+| `paths.kg_path` | `KGs/KG_hotpotqa_demo` |
+| `paths.result_dir` | `outputs/hotpotqa_demo` |
+| `global_env.OPENAI_API_KEY` | Your QA API key |
+| `global_env.OPENAI_BASE_URL` | Your QA API base URL |
+| `global_env.OPENAI_MODEL` | Your QA model name |
+
+Enable `run.run_phase1`, `run.run_phase2`, and `run.run_evaluation`, and choose retrieval parameters using the table below. The runner reads the API settings from this configuration; these entries override the environment variables used during preparation.
+
+### 5. Run Retrieval and Evaluation
+
+```powershell
+python run.py --config configs/hotpotqa_demo.yaml
+```
+
+Results are saved to:
+
+```text
+outputs/hotpotqa_demo/
+|-- phase1_evidence.json
+|-- phase2_evidence.json
+|-- qa_results_with_recall.json
+|-- phase1.log
+|-- phase2.log
+`-- evaluation.log
+```
+
+## Parameter Settings
+
+Edit parameters in the configuration file passed to `run.py`. Parameter meanings and tuning ranges:
+
+| Configuration entry | Meaning | Tuning range or valid choices |
+| --- | --- | --- |
+| `phase1.env.NEFF_THRESHOLD` | Sufficiency threshold (gamma). | `1.0-3.0`, in steps of `0.1`; smaller values are more selective. |
+| `phase1.env.RELATION_K` | Number of structural candidates retained after relation matching (R). | `{6, 8, 10, 12, 14}` |
+| `phase1.env.TOP_N_LLM` | Number of structural candidates retained after reranking (Ks). | `{1, 3, 5, 7, 9}` |
+| `phase2.env.TOPK_UNRESOLVED` | Number of text passages retained after reranking per unresolved constraint (Kt). | `{1, 3, 5, 7, 9}` |
+| `phase1.env.TOP_K_ENTITY` | Maximum candidate anchors per explicit entity. | Positive integer. |
+| `phase2.env.UNRES_TOP_SIMILAR` | Number of text passages retained before reranking (Kt'). | Positive integer; choose at least Kt to allow that many final passages when available. |
+| `phase1.env.EMB_MODEL`, `phase2.env.EMB_MODEL` | Embedding model for relation or passage similarity. | Compatible model identifier or local model directory. |
+| `phase1.env.RERANK_MODEL`, `phase2.env.RERANK_MODEL` | Cross-encoder model for structural or text reranking. | Compatible model identifier or local model directory. |
+| `phase1.env.EMB_DEVICE`, `phase2.env.EMB_DEVICE` | Device for embedding inference. | `cpu` or an available CUDA device such as `cuda:0`. |
+| `phase1.env.RERANK_BATCH`, `phase2.env.RERANK_BATCH` | Reranker batch size. | Positive integer, limited by available memory. |
+
+`run.max_samples` controls the query count; a nonpositive value processes all loaded query plans. Stage switches accept `true` or `false`; skipping a retrieval stage requires its existing output at the configured path. Configuration entries override the script defaults and inherited environment variables.
+
+## System Overview
+
+We construct a companion web interface for managing documents and knowledge-base versions, exploring knowledge graphs, and performing multi-hop question answering. It brings document import, knowledge construction, retrieval, and answer inspection into one workspace, with access to supporting evidence and execution records. The specifical contents are in `../system/`.
+
+The screenshots below show a newly created project before documents are imported.
+
+**Knowledge overview**
+
+![CS-RAG knowledge overview](docs/system/overview.png)
+
+**Document and knowledge-base management**
+
+![CS-RAG document and knowledge-base management](docs/system/knowledge-base.png)
+
+**Retrieval and question answering**
+
+![CS-RAG retrieval and question answering](docs/system/question-answering.png)

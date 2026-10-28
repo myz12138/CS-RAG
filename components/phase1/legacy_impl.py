@@ -1,5 +1,7 @@
-﻿
+
 import json
+import math
+import re
 from collections import defaultdict
 from difflib import SequenceMatcher
 from tqdm import tqdm
@@ -13,11 +15,7 @@ import torch.nn.functional as F
 
 from utils.remote_emb import EmbeddingClient
 
-#try:
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
-# except Exception as _e:
-#     AutoTokenizer = None
-#     AutoModelForSequenceClassification = None
 
 
 
@@ -28,33 +26,36 @@ EMB_DEVICE = os.getenv("EMB_DEVICE", "cpu")
 enc = EmbeddingClient(EMB_MODEL, EMB_DEVICE)
 DATASET = os.getenv("DATASET", "2wiki")
 
-TOP_N_LLM = int(os.getenv("TOP_N_LLM", "3"))
+TOP_N_LLM = int(os.getenv("TOP_N_LLM", "7" if DATASET == "musique" else "5"))
+RELATION_VARIANTS = int(os.getenv("RELATION_VARIANTS", "4" if DATASET == "musique" else "3"))
 TOP_K_ENTITY = int(os.getenv("TOP_K_ENTITY", "3"))
-RELATION_K = int(os.getenv("RELATION_K", "8"))
+RELATION_K = int(os.getenv("RELATION_K", "10" if DATASET == "musique" else "8"))
 RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
-RERANK_MAX_LENGTH = int(os.getenv("RERANK_MAX_LENGTH", "128"))
+RERANK_MAX_LENGTH = int(
+    os.getenv("PHASE1_RERANK_MAX_LENGTH", os.getenv("RERANK_MAX_LENGTH", "128"))
+)
 RERANK_BATCH = int(os.getenv("RERANK_BATCH", "32"))
 RERANK_FP16 = os.getenv("RERANK_FP16", "1") == "1"
 INCLUDE_QUESTION_IN_RERANK = os.getenv("INCLUDE_QUESTION_IN_RERANK", "1") == "1"
 
-NEFF_THRESHOLD = float(os.getenv("NEFF_THRESHOLD", "1.5"))
+NEFF_THRESHOLD = float(os.getenv("NEFF_THRESHOLD", {"musique": "1.5", "2wiki": "1.6", "hotpotqa": "2.0"}[DATASET]))
 
 _DEFAULTS = {
     "2wiki": {
-        "QUERY_JSON": "planned_queries/2wiki_data/query_graph_v8_2wiki.json",
-        "OUTPUT_JSON": "planned_queries/2wiki_data/phase1_evidence_v8_2wiki.json",
+        "QUERY_JSON": "planner_queries/2wiki_data/query_graph_2wiki.json",
+        "OUTPUT_JSON": "planner_queries/2wiki_data/phase1_evidence_v8_2wiki.json",
         "RAW_DATA_JSON": "dataset/2wikimultihopqa.json",
-        "KG_PATH": "artifacts/kg_perturbed/missing_edges_10/KGs/KG_2wiki",
+        "KG_PATH": "KGs/KG_2wiki",
     },
     "hotpotqa": {
-        "QUERY_JSON": "planned_queries/hotpotqa_data/query_graph_v8_hotpotqa.json",
-        "OUTPUT_JSON": "planned_queries/hotpotqa_data/phase1_evidence_v8_hotpotqa.json",
+        "QUERY_JSON": "planner_queries/hotpotqa_data/query_graph_hotpotqa.json",
+        "OUTPUT_JSON": "planner_queries/hotpotqa_data/phase1_evidence_v8_hotpotqa.json",
         "RAW_DATA_JSON": "dataset/hotpotqa.json",
         "KG_PATH": "KGs/KG_hotpotqa",
     },
     "musique": {
-        "QUERY_JSON": "planned_queries/musique_data/query_graph_v8_musique.json",
-        "OUTPUT_JSON": "planned_queries/musique_data/phase1_evidence_v8_musique.json",
+        "QUERY_JSON": "planner_queries/musique_data/query_graph_musique.json",
+        "OUTPUT_JSON": "planner_queries/musique_data/phase1_evidence_v8_musique.json",
         "RAW_DATA_JSON": "dataset/musique.json",
         "KG_PATH": "KGs/KG_musique",
     },
@@ -86,10 +87,7 @@ def _load_json(path):
         return json.load(f)
 
 def load_raw_dataset_id2qa(dataset, path):
-    """
-    Optional: load raw dataset to fill missing fields (question/answer) if query_graph lacks them.
-    Returns: id(str) -> {"question":..., "answer":...}
-    """
+    """Load raw questions, answers, and candidate passages by question ID."""
     if not path or not os.path.exists(path):
         return {}
 
@@ -109,14 +107,19 @@ def load_raw_dataset_id2qa(dataset, path):
         if dataset == "musique":
             ans = ex.get("answer")
         id2qa[str(ex_id)] = {"question": q, "answer": ans}
+        if dataset == "musique":
+            id2qa[str(ex_id)]["context_passages"] = ex.get("paragraphs", [])
+            id2qa[str(ex_id)]["context_titles"] = [str(p.get("title") or "").strip() for p in ex.get("paragraphs", [])]
+        if dataset in ("2wiki", "hotpotqa"):
+            context = ex.get("context") or ex.get("contexts") or []
+            id2qa[str(ex_id)]["context_titles"] = [
+                str(c[0] if isinstance(c, list) else c.get("title", "")).strip()
+                for c in context if isinstance(c, (list, dict)) and c
+            ]
     return id2qa
 
 def normalize_query_items(dataset, query_items, id2qa=None):
-    """
-    Normalize query_graph items to the schema expected by process_item:
-      {"id", "question", "ground_truth_answer", "query_plan"}
-    Accepts several common key variants.
-    """
+    """Normalize saved query plans and fill missing fields from raw data."""
     id2qa = id2qa or {}
     out = []
     for it in query_items:
@@ -154,6 +157,8 @@ def normalize_query_items(dataset, query_items, id2qa=None):
                 "question": q,
                 "ground_truth_answer": ans,
                 "query_plan": qp,
+                "context_titles": (id2qa.get(qid, {}) or {}).get("context_titles"),
+                "context_passages": (id2qa.get(qid, {}) or {}).get("context_passages"),
             }
         )
     return out
@@ -197,12 +202,7 @@ def load_kg_from_jsonl(out_dir: str):
 
 
 def load_kg(kg_path):
-    """
-    Supports:
-      - .pt (torch.save)
-      - json / dict with keys {"entities","triples"}
-      - jsonl directory name/path via read_hotpotqa.load_kg_from_jsonl
-    """
+    """Load a KG from a serialized file or JSONL directory."""
     if isinstance(kg_path, str) and kg_path.endswith(".pt"):
         import torch
         return torch.load(kg_path)
@@ -262,6 +262,8 @@ def build_kg_indices(kg):
                 "relation": r,
                 "head": h_name,
                 "tail": t_name,
+                "title": tr.get("title") if isinstance(tr, dict) else None,
+                "evidence": tr.get("evidence") if isinstance(tr, dict) else None,
             }
         )
         if isinstance(h_id, int):
@@ -273,7 +275,9 @@ def build_kg_indices(kg):
     return entities, entity_names, triple_info, out_index, in_index
 
 def str_sim(a, b):
-    return SequenceMatcher(None, (a or "").lower(), (b or "").lower()).ratio()
+    qa = set((a or "").lower().split())
+    kb = set((b or "").lower().split())
+    return len(qa & kb) / len(qa) if qa else 0.0
 
 def text_sim(a, b):
     """Cosine similarity between embeddings of two texts, with a simple in-process cache."""
@@ -315,10 +319,8 @@ def has_token_overlap(a, b):
     tb = [t for t in (b or "").lower().split() if t]
     return len(set(ta) & set(tb)) > 0
 
-def map_query_entities(query_triples, entity_names):
-    """
-    Explicit (non-variable) entities in query -> top-k KG entity ids (token-overlap filtered).
-    """
+def map_query_entities(query_triples, entity_names, allowed_entity_ids=None):
+    """Match explicit query entities to KG entities by token overlap."""
     ents = set()
     for qt in query_triples:
         h = qt.get("head")
@@ -332,6 +334,8 @@ def map_query_entities(query_triples, entity_names):
     for qe in ents:
         scored = []
         for idx, name in enumerate(entity_names):
+            if allowed_entity_ids is not None and idx not in allowed_entity_ids:
+                continue
             if not has_token_overlap(qe, name):
                 continue
             s = str_sim(qe, name)
@@ -360,7 +364,7 @@ def get_1hop_triples(eid, out_index, in_index):
     return list(set(out_index.get(eid, []) + in_index.get(eid, [])))
 
 def _clean_relation_variants(qt_effective):
-    q_rel = str(qt_effective.get("relation", "") or "")
+    q_rel = str(qt_effective.get("relation", "") or "").strip()
     variants= qt_effective.get("relation_variants", [])
     if not isinstance(variants, list):
         variants = []
@@ -369,7 +373,10 @@ def _clean_relation_variants(qt_effective):
         if q_rel in variants_clean:
             variants_clean.remove(q_rel)
         variants_clean.insert(0, q_rel)
-    return variants_clean
+    variants_clean = list(dict.fromkeys(variants_clean))
+    if not variants_clean:
+        raise ValueError("The constraint has no valid relation phrase. Regenerate the query plan.")
+    return variants_clean[:max(1, RELATION_VARIANTS)]
 
 def relation_score(qt_effective, kg_relation):
     variants_clean = _clean_relation_variants(qt_effective)
@@ -444,14 +451,7 @@ def _rerank_score_pairs(reranker, pairs):
 
 
 def rerank_select_topn(reranker, question, query_triple, candidates, top_n=TOP_N_LLM):
-    """
-    Rerank Stage-1 top-k candidate triples.
-
-    Following your requirement, the reranker input uses a concatenation of:
-      - the (possibly unresolved) query triple expression
-      - the candidate triple expression
-    The original question is also prepended (configurable).
-    """
+    """Rerank candidate triples using the question and current constraint."""
     if not candidates:
         return [], [], {}
 
@@ -488,355 +488,272 @@ def rerank_select_topn(reranker, question, query_triple, candidates, top_n=TOP_N
 def process_item(item, entities, entity_names, triple_info, out_index, in_index, client):
     question = item["question"]
     qtriples = item["query_plan"]
+    allowed_tids = None
+    allowed_entities = None
+    if DATASET in ("2wiki", "hotpotqa", "musique"):
+        titles = item.get("context_titles")
+        if titles is None:
+            raw = load_raw_dataset_id2qa(DATASET, RAW_DATA_JSON)
+            titles = raw.get(str(item["id"]), {}).get("context_titles")
+        if titles is None:
+            raise ValueError(f"Missing candidate passages for query {item['id']}")
+        titles = set(titles)
+        allowed_tids = {i for i, tr in enumerate(triple_info) if tr.get("title") in titles}
+        if DATASET == "musique":
+            passages = item.get("context_passages")
+            if passages is None:
+                raw = load_raw_dataset_id2qa(DATASET, RAW_DATA_JSON)
+                passages = raw.get(str(item["id"]), {}).get("context_passages")
+            if passages is None:
+                raise ValueError(f"Missing MuSiQue paragraphs for query {item['id']}")
+            by_title = defaultdict(list)
+            for passage in passages:
+                text = " ".join(re.findall(r"\w+", str(passage.get("paragraph_text") or "").casefold()))
+                by_title[str(passage.get("title") or "").strip()].append(f" {text} ")
+            allowed_tids = {tid for tid in allowed_tids if triple_info[tid].get("evidence") and any(
+                " " + " ".join(re.findall(r"\w+", str(triple_info[tid]["evidence"]).casefold())) + " " in text
+                for text in by_title[triple_info[tid]["title"]])}
+        allowed_entities = set()
+        for tid in allowed_tids:
+            allowed_entities.update([triple_info[tid]["head_id"], triple_info[tid]["tail_id"]])
 
-    known_entities, emap = map_query_entities(qtriples, entity_names)
-
-    triple_meta = []
-    for qi, qt in enumerate(qtriples):
-        h = qt.get("head")
-        t = qt.get("tail")
-        is_hv = is_var(h)
-        is_tv = is_var(t)
-
-        anchor_nodes = []
-        if not is_hv and h in emap:
-            anchor_nodes.extend(emap[h])
-        if not is_tv and t in emap:
-            for eid in emap[t]:
-                if eid not in anchor_nodes:
-                    anchor_nodes.append(eid)
-
-        has_anchor = len(anchor_nodes) > 0
-        if is_hv and is_tv:
-            ttype = "double_var"
-        elif (is_hv ^ is_tv) and has_anchor:
-            ttype = "single_var_with_anchor"
-        elif (not is_hv and not is_tv) and has_anchor:
-            ttype = "no_var_with_anchor"
-        else:
-            ttype = "no_anchor"
-
-        triple_meta.append({"index": qi, "anchor_nodes_initial": anchor_nodes, "triple_type_initial": ttype})
-
+    known_entities, emap = map_query_entities(qtriples, entity_names, allowed_entities)
     support = defaultdict(list)
     rel_score_selected_map = defaultdict(dict)
     rerank_score_selected_map = defaultdict(dict)
-
     var_candidates_per_triple = defaultdict(lambda: defaultdict(set))
     var_triple_entity = defaultdict(lambda: defaultdict(dict))
-
     triples_debug = {}
+    dependencies = {}
+    candidate_bindings = defaultdict(lambda: defaultdict(list))
+    passed = set()
+    var_final = {}
 
-    def run_retrieval(qi, qt_effective, anchor_nodes, stage_tag, triple_type_initial):
+    def run_retrieval(qi, qt_effective, anchor_nodes, stage_tag, fixed_ids=None):
         cand_ids_all = set()
-        for nid in anchor_nodes or []:
+        for nid in anchor_nodes:
             cand_ids_all.update(get_1hop_triples(nid, out_index, in_index))
-        cand_ids_all = sorted(cand_ids_all)
+        if allowed_tids is not None:
+            cand_ids_all &= allowed_tids
+        if fixed_ids is not None:
+            hb, tb = fixed_ids
+            cand_ids_all = {tid for tid in cand_ids_all if
+                (triple_info[tid]["head_id"], triple_info[tid]["tail_id"]) in ((hb, tb), (tb, hb))}
+        cand_ids_top, rel_scores = top_by_relation(qt_effective, triple_info, sorted(cand_ids_all), k=RELATION_K)
+        candidates = [{"triple_id": tid, "head": triple_info[tid]["head"],
+                       "relation": triple_info[tid]["relation"], "tail": triple_info[tid]["tail"]}
+                      for tid in cand_ids_top]
+        tids, indices, scores = rerank_select_topn(client, question, qt_effective, candidates, top_n=TOP_N_LLM)
+        for tid in tids:
+            if tid not in support[qi]:
+                support[qi].append(tid)
+            rel_score_selected_map[qi][tid] = max(rel_score_selected_map[qi].get(tid, float("-inf")), rel_scores[tid])
+            rerank_score_selected_map[qi][tid] = max(rerank_score_selected_map[qi].get(tid, float("-inf")), scores[tid])
+        debug = triples_debug.setdefault(qi, {"query_triple_index": qi, "stage": stage_tag,
+            "anchors": [], "candidate_ids_topk": [], "llm_selected_triple_ids": [],
+            "triple_type_initial": "double_var" if all(is_var(qtriples[qi].get(k)) for k in ("head", "tail")) else "single_var_with_anchor"})
+        debug["stage"] = stage_tag
+        debug.setdefault("anchors", [])
+        debug.setdefault("candidate_ids_topk", [])
+        debug.setdefault("triple_type_initial", "double_var")
+        for nid in anchor_nodes:
+            record = {"entity_id": nid, "entity_name": entity_names[nid]}
+            if record not in debug["anchors"]:
+                debug["anchors"].append(record)
+        debug["candidate_ids_topk"] = sorted(set(debug["candidate_ids_topk"]) | set(cand_ids_top))
+        return tids
 
-        cand_ids_top, top_score_map = top_by_relation(qt_effective, triple_info, cand_ids_all, k=RELATION_K) if cand_ids_all else ([], {})
+    def extract_var_candidates(qi, qt_effective, anchors, tids, bound=None):
+        bound = bound or {}
+        anchor_set = set(anchors)
+        for tid in tids:
+            tr = triple_info[tid]
+            opposite = set()
+            if tr["head_id"] in anchor_set:
+                opposite.add(tr["tail_id"])
+            if tr["tail_id"] in anchor_set:
+                opposite.add(tr["head_id"])
+            opposite = {eid for eid in opposite if isinstance(eid, int)}
+            for side in ("head", "tail"):
+                v = qtriples[qi].get(side)
+                if not is_var(v):
+                    continue
+                eids = {bound[v]} if v in bound else opposite
+                var_triple_entity[v][qi].setdefault(tid, set()).update(eids)
+            unbound = {qtriples[qi].get(side) for side in ("head", "tail")
+                       if is_var(qtriples[qi].get(side)) and qtriples[qi].get(side) not in bound}
+            bindings = [dict(bound, **{v: eid}) for v in unbound for eid in opposite] if unbound else [dict(bound)]
+            for assignment in bindings:
+                if assignment not in candidate_bindings[qi][tid]:
+                    candidate_bindings[qi][tid].append(assignment)
 
-        selected_tids, selected_indices, rerank_score_map = ([], [], {})
-        if cand_ids_top:
-            llm_candidates = [
-                {"triple_id": tid, "head": triple_info[tid]["head"], "relation": triple_info[tid]["relation"], "tail": triple_info[tid]["tail"]}
-                for tid in cand_ids_top
-            ]
-            selected_tids, selected_indices, rerank_score_map = rerank_select_topn(
-                client, question, qt_effective, llm_candidates, top_n=TOP_N_LLM
-            )
-        
-        if selected_tids:
-            for tid in selected_tids:
-                if tid not in support[qi]:
-                    support[qi].append(tid)
-                rel_score_selected_map[qi][int(tid)] = float(top_score_map.get(int(tid), 0.0))
-                rerank_score_selected_map[qi][int(tid)] = float(rerank_score_map.get(int(tid), 0.0))
+    def check_pool(qi):
+        tids = sorted(support[qi], key=lambda tid: (-rerank_score_selected_map[qi][tid], tid))[:max(1, TOP_N_LLM)]
+        support[qi] = tids
+        variables = {qt for qt in (qtriples[qi].get("head"), qtriples[qi].get("tail")) if is_var(qt)}
+        for v in variables:
+            maps = var_triple_entity[v].get(qi, {})
+            var_triple_entity[v][qi] = {tid: maps[tid] for tid in tids if tid in maps}
+            var_candidates_per_triple[v][qi] = set().union(*var_triple_entity[v][qi].values()) if var_triple_entity[v][qi] else set()
+        logits = [rerank_score_selected_map[qi][tid] for tid in tids]
+        if logits:
+            weights = [math.exp(x - max(logits)) for x in logits]
+            total = sum(weights)
+            neff = total * total / sum(w * w for w in weights)
+        else:
+            neff = float("inf")
+        resolved = bool(tids) and neff <= NEFF_THRESHOLD and all(var_candidates_per_triple[v][qi] for v in variables)
+        if resolved:
+            passed.add(qi)
+        triples_debug.setdefault(qi, {"query_triple_index": qi})["neff"] = neff if math.isfinite(neff) else None
+        triples_debug[qi]["checked"] = True
+        triples_debug[qi]["llm_selected_triple_ids"] = tids
 
-        triples_debug[qi] = {
-            "query_triple_index": int(qi),
-            "stage": stage_tag,
-            "triple_type_initial": triple_type_initial,
-            "anchors": [{"entity_id": int(nid), "entity_name": entity_names[nid]} for nid in (anchor_nodes or [])],
-            "candidate_ids_topk": [int(tid) for tid in cand_ids_top],
-            "llm_selected_triple_ids": [int(tid) for tid in selected_tids],
-            "llm_selected_indices_in_topk": selected_indices,
-        }
-        return [int(tid) for tid in selected_tids]
-
-    def extract_var_candidates_from_selected(qi, qt, anchor_nodes, selected_tids):
-        h = qt.get("head")
-        t = qt.get("tail")
-        is_hv = is_var(h)
-        is_tv = is_var(t)
-
-        if not (is_hv ^ is_tv):
-            return
-
-        var_name = h if is_hv else t
-        anchor_set = set(anchor_nodes or [])
-
-        for tid in selected_tids:
-            info = triple_info[tid]
-            hi = info["head_id"]
-            ti = info["tail_id"]
-            eids_for_this_tid = set()
-
-            if isinstance(hi, int) and hi in anchor_set and isinstance(ti, int) and ti not in anchor_set:
-                eids_for_this_tid.add(int(ti))
-            if isinstance(ti, int) and ti in anchor_set and isinstance(hi, int) and hi not in anchor_set:
-                eids_for_this_tid.add(int(hi))
-
-            if not eids_for_this_tid:
+    def consolidate():
+        active = set(passed)
+        pools = {qi: list(support[qi]) for qi in active}
+        bindings = {qi: {tid: list(candidate_bindings[qi][tid]) for tid in pools[qi]} for qi in active}
+        while True:
+            per_var = defaultdict(dict)
+            for qi in active:
+                variables = {v for v in (qtriples[qi].get("head"), qtriples[qi].get("tail")) if is_var(v)}
+                for v in variables:
+                    per_var[v][qi] = {binding[v] for tid in pools[qi] for binding in bindings[qi][tid]}
+            final = {}
+            rejected = set()
+            for v, per_qi in per_var.items():
+                sets = list(per_qi.values())
+                inter = set.intersection(*sets)
+                if not inter:
+                    rejected.update(per_qi)
+                    continue
+                ranked = []
+                for eid in inter:
+                    score = sum(max(rerank_score_selected_map[qi][tid] for tid in pools[qi]
+                        if any(binding[v] == eid for binding in bindings[qi][tid])) for qi in per_qi)
+                    ranked.append((score, eid))
+                ranked.sort(reverse=True)
+                final[v] = {"union_ids": sorted(set.union(*sets)),
+                    "intersection_ids": sorted(inter) if len(sets) > 1 else None,
+                    "primary_ids": [eid for score, eid in ranked],
+                    "primary_ranked": [{"entity_id": eid, "entity_name": entity_names[eid], "score": score} for score, eid in ranked]}
+            for qi in active:
+                for v, sources in dependencies.get(qi, {}).items():
+                    if not (sources & active):
+                        rejected.add(qi)
+            if rejected:
+                active -= rejected
+                pools = {qi: list(support[qi]) for qi in active}
+                bindings = {qi: {tid: list(candidate_bindings[qi][tid]) for tid in pools[qi]} for qi in active}
                 continue
-
-            var_candidates_per_triple[var_name][qi].update(eids_for_this_tid)
-            if tid not in var_triple_entity[var_name][qi]:
-                var_triple_entity[var_name][qi][tid] = set()
-            var_triple_entity[var_name][qi][tid].update(eids_for_this_tid)
-
-    def rank_var_candidates(v, cand_eids, per_triple_sets):
-        def best_score_for_eid_on_qi(eid, qi):
-            best = 0.0
-            tid_map = var_triple_entity.get(v, {}).get(qi, {})
-            for tid, eids in tid_map.items():
-                if eid in eids:
-                    s = float(rerank_score_selected_map.get(qi, {}).get(int(tid), 0.0))
-                    if s > best:
-                        best = s
-            return best
-
-        scored = []
-        qids = sorted(per_triple_sets.keys())
-        for eid in cand_eids:
-            if not qids:
-                s = 0.0
-            elif len(qids) == 1:
-                s = best_score_for_eid_on_qi(eid, qids[0])
-            else:
-                s = 0.0
-                for qi in qids:
-                    if eid in per_triple_sets[qi]:
-                        s += best_score_for_eid_on_qi(eid, qi)
-            scored.append((float(s), int(eid)))
-        scored.sort(reverse=True)
-        return scored
-
-    def compute_final_var_candidate_sets():
-        final = {}
-        for v, per_triple in var_candidates_per_triple.items():
-            union_set = set()
-            for s in per_triple.values():
-                union_set.update(set(s))
-
-            inter_set = None
-            if len(per_triple) > 1:
-                sets = [set(s) for s in per_triple.values()]
-                inter_set = set.intersection(*sets) if sets else set()
-
-            primary = set(inter_set) if (inter_set is not None and len(inter_set) > 0) else set(union_set)
-            ranked = rank_var_candidates(v, primary, per_triple)
-
-            final[v] = {
-                "union_ids": sorted([int(eid) for eid in union_set]),
-                "intersection_ids": sorted([int(eid) for eid in inter_set]) if inter_set is not None else None,
-                "primary_ranked": [{"entity_id": int(eid), "entity_name": entity_names[eid], "score": float(s)} for s, eid in ranked],
-                "primary_ids": [int(eid) for s, eid in ranked],
-            }
+            changed = False
+            for qi in active:
+                kept = []
+                for tid in pools[qi]:
+                    assignments = [binding for binding in bindings[qi][tid]
+                        if all(eid in final[v]["primary_ids"] for v, eid in binding.items())]
+                    if assignments != bindings[qi][tid]:
+                        changed = True
+                        bindings[qi][tid] = assignments
+                    if assignments:
+                        kept.append(tid)
+                if kept != pools[qi]:
+                    pools[qi] = kept
+                    changed = True
+                if not kept:
+                    rejected.add(qi)
+            if rejected:
+                active -= rejected
+                pools = {qi: list(support[qi]) for qi in active}
+                bindings = {qi: {tid: list(candidate_bindings[qi][tid]) for tid in pools[qi]} for qi in active}
+                continue
+            if not changed:
+                break
+        passed.intersection_update(active)
+        for qi in list(support):
+            support[qi] = pools[qi] if qi in active else []
+        for qi in active:
+            candidate_bindings[qi] = {tid: bindings[qi][tid] for tid in pools[qi]}
+            for v in per_var:
+                if qi in per_var[v]:
+                    var_triple_entity[v][qi] = {tid: {binding[v] for binding in bindings[qi][tid]} for tid in pools[qi]}
+        for v, per_qi in var_candidates_per_triple.items():
+            for qi in list(per_qi):
+                if qi not in active:
+                    del per_qi[qi]
+                else:
+                    per_qi[qi] = set().union(*(var_triple_entity[v][qi].get(tid, set()) for tid in pools[qi]))
+        for qi, qt in enumerate(qtriples):
+            debug = triples_debug.setdefault(qi, {"query_triple_index": qi, "checked": False})
+            debug["status"] = "resolved" if qi in active else "unresolved"
+            debug["llm_selected_triple_ids"] = support.get(qi, [])
         return final
 
-    def _neff_from_logits(logits):
-        """Effective number of candidates (Neff) using linear-normalized logits (NO softmax / exp)."""
-        if not logits:
-            return float("inf")
-        xs = [float(x) for x in logits]
-        mn = min(xs)
-        if mn <= 0.0:
-            ws = [x - mn + 1e-6 for x in xs]
-        else:
-            ws = xs
-        z = sum(ws)
-        if z <= 0.0:
-            return float("inf")
-        ps = [w / z for w in ws]
-        return 1.0 / sum(p * p for p in ps)
-
-    def apply_neff_gating(var_final_dict):
-        """If a variable is not solvable (Neff too large), drop it entirely (no candidates output)."""
-        to_drop = []
-        for v, info in (var_final_dict or {}).items():
-            ranked = info.get("primary_ranked", []) or []
-            ranked = ranked[: max(1, int(TOP_N_LLM))]
-            logits = [float(x.get("score")) for x in ranked]
-            neff = _neff_from_logits(logits)
-            if (not ranked) or (neff > float(NEFF_THRESHOLD)):
-                to_drop.append(v)
-            else:
-                info["primary_ranked"] = ranked
-                info["primary_ids"] = [int(x["entity_id"]) for x in ranked]
-        for v in to_drop:
-            var_final_dict.pop(v, None)
-            var_candidates_per_triple.pop(v, None)
-            var_triple_entity.pop(v, None)
-        return var_final_dict
-
-    for meta in triple_meta:
-        qi = meta["index"]
-        qt = qtriples[qi]
-        anchor_nodes = meta["anchor_nodes_initial"]
-        ttype = meta["triple_type_initial"]
-
-        if not anchor_nodes:
+    pending = []
+    for qi, qt in enumerate(qtriples):
+        hv, tv = is_var(qt.get("head")), is_var(qt.get("tail"))
+        if hv and tv:
+            pending.append(qi)
             continue
-        if ttype == "double_var":
+        if not (hv or tv):
             continue
+        anchors = emap.get(qt.get("tail") if hv else qt.get("head"), [])
+        tids = run_retrieval(qi, qt, anchors, "first_pass")
+        extract_var_candidates(qi, qt, anchors, tids)
+        check_pool(qi)
+    var_final = consolidate()
 
-        selected_tids = run_retrieval(qi, qt, anchor_nodes, "first_pass", ttype)
-
-        if ttype == "single_var_with_anchor" and selected_tids:
-            extract_var_candidates_from_selected(qi, qt, anchor_nodes, selected_tids)
-
-    var_final = compute_final_var_candidate_sets()
-    var_final = apply_neff_gating(var_final)
-
-    var_candidate_anchors = defaultdict(dict)
-    for v, info in var_final.items():
-        for eid in info.get("primary_ids", []):
-            anchor_ids = set([int(eid)])
-            surf = ent_name(entities[int(eid)]) if 0 <= int(eid) < len(entities) else str(eid)
-            for mid in map_surface_to_entity_ids(surf, entity_names):
-                anchor_ids.add(int(mid))
-            var_candidate_anchors[v][int(eid)] = sorted(anchor_ids)
-
-    for meta in triple_meta:
-        qi = meta["index"]
-        if meta["triple_type_initial"] != "double_var":
-            continue
-
-        qt = qtriples[qi]
-        h = qt.get("head")
-        t = qt.get("tail")
-
-        h_var = h if is_var(h) else None
-        t_var = t if is_var(t) else None
-
-        h_cands = var_final.get(h_var, {}).get("primary_ids", []) if h_var else []
-        t_cands = var_final.get(t_var, {}).get("primary_ids", []) if t_var else []
-
-        if not h_cands and not t_cands:
-            continue
-
-        if h_cands and not t_cands:
-            for hb in h_cands:
-                anchor_nodes = var_candidate_anchors.get(h_var, {}).get(int(hb), [])
-                if not anchor_nodes:
-                    continue
-                new_qt = {
-                    "head": ent_name(entities[int(hb)]),
-                    "relation": qt.get("relation", ""),
-                    "relation_variants": qt.get("relation_variants", []),
-                    "tail": t,
-                }
-                selected_tids = run_retrieval(qi, new_qt, anchor_nodes, "second_pass", meta["triple_type_initial"])
-                if selected_tids:
-                    extract_var_candidates_from_selected(qi, new_qt, anchor_nodes, selected_tids)
-
-        elif t_cands and not h_cands:
-            for tb in t_cands:
-                anchor_nodes = var_candidate_anchors.get(t_var, {}).get(int(tb), [])
-                if not anchor_nodes:
-                    continue
-                new_qt = {
-                    "head": h,
-                    "relation": qt.get("relation", ""),
-                    "relation_variants": qt.get("relation_variants", []),
-                    "tail": ent_name(entities[int(tb)]),
-                }
-                selected_tids = run_retrieval(qi, new_qt, anchor_nodes, "second_pass", meta["triple_type_initial"])
-                if selected_tids:
-                    extract_var_candidates_from_selected(qi, new_qt, anchor_nodes, selected_tids)
-
-        else:
-            for hb in h_cands:
-                for tb in t_cands:
-                    anchor_nodes = []
-                    anchor_nodes.extend(var_candidate_anchors.get(h_var, {}).get(int(hb), []))
-                    for x in var_candidate_anchors.get(t_var, {}).get(int(tb), []):
-                        if x not in anchor_nodes:
-                            anchor_nodes.append(x)
-                    if not anchor_nodes:
+    while pending:
+        deferred = []
+        for qi in pending:
+            qt = qtriples[qi]
+            h, t = qt.get("head"), qt.get("tail")
+            hs = var_final.get(h, {}).get("primary_ids", [])
+            ts = var_final.get(t, {}).get("primary_ids", [])
+            if not hs and not ts:
+                deferred.append(qi)
+                continue
+            bound_vars = [v for v, candidates in ((h, hs), (t, ts)) if candidates]
+            dependencies[qi] = {v: {j for j in passed if j in var_candidates_per_triple[v]} for v in bound_vars}
+            for hb in hs or [None]:
+                for tb in ts or [None]:
+                    if h == t and hb != tb:
                         continue
-                    new_qt = {
-                        "head": ent_name(entities[int(hb)]),
-                        "relation": qt.get("relation", ""),
-                        "relation_variants": qt.get("relation_variants", []),
-                        "tail": ent_name(entities[int(tb)]),
-                    }
-                    run_retrieval(qi, new_qt, anchor_nodes, "second_pass", meta["triple_type_initial"])
+                    bound = {v: eid for v, eid in ((h, hb), (t, tb)) if eid is not None}
+                    effective = dict(qt)
+                    effective["head"] = ent_name(entities[hb]) if hb is not None else h
+                    effective["tail"] = ent_name(entities[tb]) if tb is not None else t
+                    anchors = [hb] if hb is not None else [tb]
+                    fixed = (hb, tb) if hb is not None and tb is not None else None
+                    tids = run_retrieval(qi, effective, anchors, "second_pass", fixed)
+                    extract_var_candidates(qi, effective, anchors, tids, bound)
+            check_pool(qi)
+        if deferred == pending:
+            break
+        pending = deferred
+        var_final = consolidate()
 
-    var_final = compute_final_var_candidate_sets()
-    var_final = apply_neff_gating(var_final)
-
-    evidence_ids = set()
-    for tids in support.values():
-        evidence_ids.update([int(t) for t in tids])
-
+    evidence_ids = sorted({tid for tids in support.values() for tid in tids})
+    idx_map = {tid: i for i, tid in enumerate(evidence_ids)}
     evidence_triples = []
-    idx_map = {}
-    for k, tid in enumerate(sorted(evidence_ids)):
-        info = triple_info[tid]
-        evidence_triples.append(
-            {
-                "kg_triple_id": int(tid),
-                "head_entity_id": int(info["head_id"]) if isinstance(info["head_id"], int) else None,
-                "tail_entity_id": int(info["tail_id"]) if isinstance(info["tail_id"], int) else None,
-                "head": info["head"],
-                "relation": info["relation"],
-                "tail": info["tail"],
-            }
-        )
-        idx_map[int(tid)] = int(k)
-
-    support_list = []
-    for qi, tids in support.items():
-        ev_idx = [idx_map[int(tid)] for tid in tids if int(tid) in idx_map]
-        if not ev_idx:
-            continue
-        support_list.append({"query_triple_index": int(qi), "evidence_indices": ev_idx})
-
-    debug_info = {
-        "known_entities": known_entities,
-        "entity_map": [
-            {
-                "query_entity": qe,
-                "kg_entity_ids": [int(eid) for eid in emap[qe]],
-                "kg_entity_names": [entity_names[eid] for eid in emap[qe]],
-            }
-            for qe in emap
-        ],
-        "variable_candidates": {
-            v: {
-                "union_ids": info["union_ids"],
-                "intersection_ids": info["intersection_ids"],
-                "primary_ranked": info["primary_ranked"],
-            }
-            for v, info in var_final.items()
-        },
-        "variable_candidates_per_triple": {
-            v: {str(qi): sorted([int(eid) for eid in eids]) for qi, eids in per_triple.items()}
-            for v, per_triple in var_candidates_per_triple.items()
-        },
-        "triples_debug": [triples_debug[qi] for qi in sorted(triples_debug.keys())],
-    }
-
-    return {
-        "id": item["id"],
-        "question": item["question"],
-        "ground_truth_answer": item.get("ground_truth_answer"),
-        "query_plan": item["query_plan"],
-        "evidence_triples": evidence_triples,
-        "support": support_list,
-        "debug": debug_info,
-    }
+    for tid in evidence_ids:
+        tr = triple_info[tid]
+        evidence_triples.append({"kg_triple_id": tid, "head_entity_id": tr["head_id"],
+            "tail_entity_id": tr["tail_id"], "head": tr["head"], "relation": tr["relation"],
+            "tail": tr["tail"], "title": tr.get("title"), "evidence": tr.get("evidence")})
+    support_list = [{"query_triple_index": qi, "evidence_indices": [idx_map[tid] for tid in tids],
+        "rerank_scores": {str(tid): rerank_score_selected_map[qi][tid] for tid in tids}}
+        for qi, tids in support.items() if tids]
+    debug_info = {"known_entities": known_entities,
+        "entity_map": [{"query_entity": qe, "kg_entity_ids": ids,
+            "kg_entity_names": [entity_names[eid] for eid in ids]} for qe, ids in emap.items()],
+        "variable_candidates": {v: {key: info[key] for key in ("union_ids", "intersection_ids", "primary_ranked")}
+            for v, info in var_final.items()},
+        "variable_candidates_per_triple": {v: {str(qi): sorted(eids) for qi, eids in per_qi.items()}
+            for v, per_qi in var_candidates_per_triple.items() if per_qi},
+        "triples_debug": [triples_debug[qi] for qi in sorted(triples_debug)]}
+    return {"id": item["id"], "question": question, "ground_truth_answer": item.get("ground_truth_answer"),
+        "query_plan": qtriples, "evidence_triples": evidence_triples, "support": support_list, "debug": debug_info}
 
 
 def main_1():

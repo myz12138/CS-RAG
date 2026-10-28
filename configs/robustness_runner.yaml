@@ -13,10 +13,10 @@
     "evaluation": "components/eval_run.py"
   },
   "paths": {
-    "query_json": "planned_queries/2wiki_data/query_graph_v8_2wiki.json",
-    "raw_data_json": "dataset/2wikimultihopqa.json",   #2wikimultihopqa.json"
-    "data_json": "dataset/2wikimultihopqa.json",  # 2wikimultihopqa.json"
-    "kg_path": "KGs/KG_2wiki", #artifacts/kg_perturbed_2wiki/semantic_flip_10_global/
+    "query_json": "planner_queries/2wiki_data/query_graph_2wiki.json",
+    "raw_data_json": "dataset/2wikimultihopqa.json",
+    "data_json": "dataset/2wikimultihopqa.json",
+    "kg_path": "KGs/KG_2wiki",
     "result_dir": "outputs/robustness/2wiki/gpt",
     "phase1_output": "phase1_evidence.json",
     "phase2_output": "phase2_evidence.json",
@@ -31,10 +31,11 @@
     "env": {
       "EMB_MODEL": "sentence-transformers/all-MiniLM-L6-v2",
       "EMB_DEVICE": "cpu",
-      "TOP_N_LLM": 3,
-      "TOP_K_ENTITY": 1,
-      "RELATION_K": 3,
-      "NEFF_THRESHOLD": 1.0,
+      "TOP_N_LLM": 5,
+      "RELATION_VARIANTS": 3,
+      "TOP_K_ENTITY": 3,
+      "RELATION_K": 8,
+      "NEFF_THRESHOLD": 1.6,
       "RERANK_MODEL": "BAAI/bge-reranker-v2-m3",
       "RERANK_MAX_LENGTH": 128,
       "RERANK_BATCH": 32,
@@ -46,8 +47,8 @@
     "env": {
       "EMB_MODEL": "sentence-transformers/all-MiniLM-L6-v2",
       "EMB_DEVICE": "cpu",
-      "UNRES_TOP_SIMILAR": 20,
-      "TOPK_UNRESOLVED": 8,
+      "UNRES_TOP_SIMILAR": 8,
+      "TOPK_UNRESOLVED": 5,
       "RERANK_MODEL": "BAAI/bge-reranker-v2-m3",
       "RERANK_MAX_LENGTH": 512,
       "RERANK_BATCH": 32,
@@ -55,11 +56,6 @@
     }
   },
   "evaluation": {
-    "env": {
-      "PROMPT_MAX_TRIPLES": 20,
-      "PROMPT_MAX_TEXT_PER_TRIPLE": 8,
-      "RECALL_K_LIST": "2,5,10",
-      "GT_SET_FILE_2WIKI": "planned_queries/2wiki_data/ground_truth_answer_set_v8_2wiki.json"
-    }
+    "env": {}
   }
 }

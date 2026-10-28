@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 from pathlib import Path
 
@@ -22,21 +22,21 @@ DATASET = os.getenv("DATASET", "musique")
 
 DEFAULTS = {
     "2wiki": {
-        "PHASE1_JSON": "planned_queries/2wiki_data/phase1_evidence_v8_2wiki.json",
+        "PHASE1_JSON": "planner_queries/2wiki_data/phase1_evidence_v8_2wiki.json",
         "DATA_JSON": "dataset/2wikimultihopqa.json",
-        "OUTPUT_JSON": "planned_queries/2wiki_data/phase2_evidence_v8_2wiki.json",
+        "OUTPUT_JSON": "planner_queries/2wiki_data/phase2_evidence_v8_2wiki.json",
         "KG_PATH": "KGs/KG_2wiki",
     },
     "hotpotqa": {
-        "PHASE1_JSON": "planned_queries/hotpotqa_data/phase1_evidence_v8_hotpotqa.json",
+        "PHASE1_JSON": "planner_queries/hotpotqa_data/phase1_evidence_v8_hotpotqa.json",
         "DATA_JSON": "dataset/hotpotqa.json",
-        "OUTPUT_JSON": "planned_queries/hotpotqa_data/phase2_evidence_v8_hotpotqa.json",
+        "OUTPUT_JSON": "planner_queries/hotpotqa_data/phase2_evidence_v8_hotpotqa.json",
         "KG_PATH": "KGs/KG_hotpotqa",
     },
     "musique": {
-        "PHASE1_JSON": "planned_queries/musique_data/phase1_evidence_v8_musique.json",
+        "PHASE1_JSON": "planner_queries/musique_data/phase1_evidence_v8_musique.json",
         "DATA_JSON": "dataset/musique.json",
-        "OUTPUT_JSON": "planned_queries/musique_data/phase2_evidence_v8_musique.json",
+        "OUTPUT_JSON": "planner_queries/musique_data/phase2_evidence_v8_musique.json",
         "KG_PATH": "KGs/KG_musique",
     },
 }
@@ -49,8 +49,8 @@ DATA_JSON = os.getenv("DATA_JSON", DEFAULTS[DATASET]["DATA_JSON"])
 OUTPUT_JSON = os.getenv("OUTPUT_JSON", DEFAULTS[DATASET]["OUTPUT_JSON"])
 KG_PATH = os.getenv("KG_PATH", DEFAULTS[DATASET]["KG_PATH"])
 MAX_SAMPLES = int(os.getenv("MAX_SAMPLES", "1000"))
-unres_top_similiar = int(os.getenv("UNRES_TOP_SIMILAR", "20"))
-TOPK_UNRESOLVED = int(os.getenv("TOPK_UNRESOLVED", "3"))
+unres_top_similiar = int(os.getenv("UNRES_TOP_SIMILAR", "8"))
+TOPK_UNRESOLVED = int(os.getenv("TOPK_UNRESOLVED", "5"))
 print("TOPK_UNRESOLVED:",TOPK_UNRESOLVED)
 print("MAX_SAMPLES:", MAX_SAMPLES)
 print("UNRES_TOP_SIMILAR:", unres_top_similiar)
@@ -67,8 +67,25 @@ enc = EmbeddingClient(EMB_MODEL, EMB_DEVICE)
 print("EMB_MODEL:", EMB_MODEL)
 print("EMB_DEVICE:", EMB_DEVICE)
 
+_TEXT_INDEX_RECALL = None
+_TEXT_INDEX_RECALL_INITIALIZED = False
+_TEXT_INDEX_CANDIDATES_INITIALIZED = False
+_TEXT_INDEX_CANDIDATES = None
+_TEXT_INDEX_RECALL_STATS = {
+    "status": "not_configured",
+    "index_dir": os.getenv("TEXT_INDEX_DIR", ""),
+    "candidate_file": os.getenv("TEXT_INDEX_CANDIDATES", ""),
+    "query_count": 0,
+    "retrieved_chunk_count": 0,
+    "selected_candidate_count": 0,
+    "fallback_count": 0,
+    "error": None,
+}
+
 RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
-RERANK_MAX_LENGTH = int(os.getenv("RERANK_MAX_LENGTH", "256"))
+RERANK_MAX_LENGTH = int(
+    os.getenv("PHASE2_RERANK_MAX_LENGTH", os.getenv("RERANK_MAX_LENGTH", "256"))
+)
 RERANK_BATCH = int(os.getenv("RERANK_BATCH", "32"))
 RERANK_FP16 = os.getenv("RERANK_FP16", "1") == "1"
 print("RERANK_MODEL:", RERANK_MODEL)
@@ -116,12 +133,7 @@ def load_kg_from_jsonl(out_dir: str):
 
 
 def load_kg(kg_path):
-    """
-    Supports:
-      - .pt (torch.save)
-      - json / dict with keys {"entities","triples"}
-      - jsonl directory name/path via read_hotpotqa.load_kg_from_jsonl
-    """
+    """Load a KG from a serialized file or JSONL directory."""
     if isinstance(kg_path, str) and kg_path.endswith(".pt"):
         import torch
         return torch.load(kg_path)
@@ -141,14 +153,16 @@ def load_kg(kg_path):
 
 
 
-def is_resolved_triple(debug,qt):
+def is_resolved_triple(debug, qt, qi=None):
+    records = (debug or {}).get("triples_debug", []) or []
+    if qi is not None:
+        record = next((r for r in records if r.get("query_triple_index") == qi), None)
+        if record is None or "status" not in record:
+            raise ValueError("Phase-1 status is missing. Run phase1 again.")
+        return record["status"] == "resolved"
     h = (qt.get("head") or "").strip()
     t = (qt.get("tail") or "").strip()
-    if get_candidate_names(debug, h)!=[] and get_candidate_names(debug, t)!=[]:
-        return True
-    else:
-        return False
-
+    return bool(get_candidate_names(debug, h) and get_candidate_names(debug, t))
 
 
 def build_reranker():
@@ -251,6 +265,141 @@ def text_sim(a, b):
     v1 = get_vec(a)
     v2 = get_vec(b)
     return float(torch.dot(v1, v2).item())
+
+
+def _runtime_model_label(value):
+    value = str(value or "").strip()
+    candidate = Path(value)
+    if candidate.is_dir():
+        return candidate.name
+    return value
+
+
+def _get_text_index_recall():
+    """Load the text index on first use."""
+
+    global _TEXT_INDEX_RECALL_INITIALIZED, _TEXT_INDEX_RECALL
+    if _TEXT_INDEX_RECALL_INITIALIZED:
+        return _TEXT_INDEX_RECALL
+    _TEXT_INDEX_RECALL_INITIALIZED = True
+
+    raw_dir = os.getenv("TEXT_INDEX_DIR", "").strip()
+    if not raw_dir:
+        return None
+    try:
+        from backend.app.indexing.text_recall import TextIndexRecall
+
+        reader = TextIndexRecall.from_environment(Path(raw_dir))
+        index_model = _runtime_model_label(reader.manifest.get("embedding_model"))
+        runtime_model = _runtime_model_label(EMB_MODEL)
+        if index_model and runtime_model and index_model != runtime_model:
+            raise RuntimeError(
+                "文本索引 embedding 模型与查询 embedding 模型不一致"
+                f"（索引={index_model}，查询={runtime_model}）"
+            )
+        _TEXT_INDEX_RECALL = reader
+        _TEXT_INDEX_RECALL_STATS["status"] = "ready"
+        _TEXT_INDEX_RECALL_STATS["backend"] = str(
+            reader.manifest.get("backend") or "local_file"
+        )
+        _TEXT_INDEX_RECALL_STATS["embedding_model"] = index_model
+    except Exception as exc:
+        _TEXT_INDEX_RECALL_STATS["status"] = "fallback"
+        _TEXT_INDEX_RECALL_STATS["error"] = str(exc)
+        print("TEXT_INDEX_RECALL unavailable; use reference full scan:", exc)
+    return _TEXT_INDEX_RECALL
+
+
+def _get_text_index_candidates():
+    """Load the query-workspace sidecar mapping index aliases to sentence positions."""
+
+    global _TEXT_INDEX_CANDIDATES_INITIALIZED, _TEXT_INDEX_CANDIDATES
+    if _TEXT_INDEX_CANDIDATES_INITIALIZED:
+        return _TEXT_INDEX_CANDIDATES
+    _TEXT_INDEX_CANDIDATES_INITIALIZED = True
+
+    raw_path = os.getenv("TEXT_INDEX_CANDIDATES", "").strip()
+    if not raw_path:
+        return None
+    try:
+        with open(raw_path, "r", encoding="utf-8") as stream:
+            payload = json.load(stream)
+        units = payload.get("units") if isinstance(payload, dict) else None
+        if not isinstance(units, list):
+            raise ValueError("TEXT_INDEX_CANDIDATES.units 不是列表")
+
+        by_entry_id = {}
+        for unit in units:
+            if not isinstance(unit, dict):
+                continue
+            if unit.get("kind") != "context_sentence":
+                continue
+            entry_id = str(unit.get("entry_id") or "").strip()
+            if not entry_id:
+                continue
+            try:
+                location = (int(unit["doc_idx"]), int(unit["sent_idx"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            by_entry_id.setdefault(entry_id, []).append(location)
+        if not by_entry_id:
+            raise ValueError("TEXT_INDEX_CANDIDATES 没有有效的句子映射")
+        _TEXT_INDEX_CANDIDATES = by_entry_id
+        _TEXT_INDEX_RECALL_STATS["candidate_unit_count"] = sum(
+            len(locations) for locations in by_entry_id.values()
+        )
+    except Exception as exc:
+        _TEXT_INDEX_RECALL_STATS["status"] = "fallback"
+        _TEXT_INDEX_RECALL_STATS["error"] = str(exc)
+        print("TEXT_INDEX_CANDIDATES unavailable; use reference full scan:", exc)
+    return _TEXT_INDEX_CANDIDATES
+
+
+def _indexed_context_locations(q_texts):
+    """Return indexed sentence positions, or None when unavailable."""
+
+    reader = _get_text_index_recall()
+    by_entry_id = _get_text_index_candidates()
+    if reader is None or by_entry_id is None:
+        _TEXT_INDEX_RECALL_STATS["fallback_count"] += 1
+        return None
+    if not q_texts:
+        _TEXT_INDEX_RECALL_STATS["fallback_count"] += 1
+        return None
+
+    try:
+        multiplier = max(1, int(os.getenv("TEXT_INDEX_RECALL_MULTIPLIER", "4")))
+    except (TypeError, ValueError):
+        multiplier = 4
+    recall_top_k = max(unres_top_similiar * multiplier, 50)
+    selected = set()
+    retrieved_chunks = 0
+    try:
+        for q_text in dedup_keep_order(q_texts):
+            query_vector = enc.encode_one(q_text)
+            hits = reader.search(query_vector, top_k=recall_top_k)
+            retrieved_chunks += len(hits)
+            for hit in hits:
+                aliases = getattr(hit, "chunk_ids", ()) or (getattr(hit, "chunk_id", ""),)
+                for entry_id in aliases:
+                    for location in by_entry_id.get(str(entry_id).strip(), ()):
+                        selected.add(location)
+    except Exception as exc:
+        _TEXT_INDEX_RECALL_STATS["status"] = "fallback"
+        _TEXT_INDEX_RECALL_STATS["error"] = str(exc)
+        _TEXT_INDEX_RECALL_STATS["fallback_count"] += 1
+        print("TEXT_INDEX_RECALL query failed; use reference full scan:", exc)
+        return None
+
+    _TEXT_INDEX_RECALL_STATS["query_count"] += 1
+    _TEXT_INDEX_RECALL_STATS["retrieved_chunk_count"] += retrieved_chunks
+    _TEXT_INDEX_RECALL_STATS["selected_candidate_count"] += len(selected)
+    if not selected:
+        _TEXT_INDEX_RECALL_STATS["fallback_count"] += 1
+        return None
+    return selected
+
+
 def load_list_json(path):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -361,14 +510,7 @@ def get_candidate_names(debug, x):
 
 
 def build_query_texts(qt, debug):
-    """
-    Build q_texts for sentence/paragraph embedding retrieval.
-
-    Key design for unresolved triples:
-      - use candidate entity names (from Phase-1 debug) for variables
-      - never insert variable placeholders into queries
-      - queries are simple concatenations of known parts
-    """
+    """Build retrieval queries from constraints and candidate entity names."""
     h = (qt.get("head") or "").strip()
     t = (qt.get("tail") or "").strip()
     r = (qt.get("relation") or "").strip()
@@ -415,12 +557,7 @@ def build_query_texts(qt, debug):
     return dedup_keep_order(qs)
 
 def keyword_groups_for_sentence_filter(qt, debug):
-    """
-    Intersection-style constraints (2wiki/hotpotqa):
-      - known surface always contributes a group
-      - variable contributes only if solved (has candidates)
-      - AND across groups; OR within group
-    """
+    """Group known and bound entity names for sentence filtering."""
     h = (qt.get("head") or "").strip()
     t = (qt.get("tail") or "").strip()
 
@@ -567,7 +704,10 @@ def build_phase1_support_map(phase1_item):
                 except Exception:
                     continue
                 if 0 <= j < len(ev_triples) and isinstance(ev_triples[j], dict):
-                    out.append(ev_triples[j])
+                    tr = dict(ev_triples[j])
+                    scores = s.get("rerank_scores", {})
+                    tr["rerank_score"] = float(scores.get(str(tr["kg_triple_id"]), 0.0))
+                    out.append(tr)
         if out:
             mp[qi] = out
     return mp
@@ -578,150 +718,44 @@ def build_rerank_query(ex, qt, debug):
     r = (qt.get("relation") or "").strip()
     t = (qt.get("tail") or "").strip()
     expr = f"{h} {r} {t}".strip()
-    return expr, question, expr
+    query = f"question: {question} UnknownTriple: {expr}"
+    return query, question, expr
 
 
-def retrieve_2wiki_like(ex, qt, debug, topk, reranker,status):
-    """Clause-level retrieval (2wiki/hotpotqa):
-
-    1) Keyword-group filtering on (title + clause)
-    2) Embedding coarse scoring (cheap) and per-document truncation
-    3) Cross-encoder reranking per triple (one triple -> one rerank batch)
-    """
-    topk = max(1, int(topk))
-    q_texts = build_query_texts(qt, debug)
-    groups = keyword_groups_for_sentence_filter(qt, debug)
-    union_keywords = extract_union_keywords(qt, debug)
+def retrieve_2wiki_like(ex, qt, debug, topk, reranker, status):
+    expr = " ".join(str(qt.get(k) or "") for k in ("head", "relation", "tail"))
     rerank_query, question, expr = build_rerank_query(ex, qt, debug)
-    
-    all_cands = []
+    passages = {}
     for doc_idx, title, sents in iter_context_units_2wiki_like(ex):
-        local = []
-        for si, sent in enumerate(sents):
-           
-            filter_text = f"{title} {sent}".strip()
-    
-            coarse=  max(text_sim(q, filter_text) for q in q_texts)
-            all_cands.append({
-                        "title": title,
-                        "paragraph_idx": int(doc_idx),
-                        "sent_idx": int(si),
-                        "evidence": sent,
-                        "context": filter_text,
-                        "similarity": coarse,
-                        "sentence_similarity": coarse,
-                    })
-    #         if not q_texts:
-    #             coarse = 0.0001
-    #         else:
-    #             coarse = max(text_sim(q, filter_text) for q in q_texts)
-    #         sent_key = si#int(si) * 1000 + int(ci)
-    #         local.append(
-    #             (
-    #                 float(coarse),
-    #                 {
-    #                     "title": title,
-    #                     "paragraph_idx": int(doc_idx),
-    #                     "sent_idx": int(sent_key),
-    #                     "evidence": sent,
-    #                     "context": filter_text,
-    #                     "similarity": float(coarse),
-    #                     "sentence_similarity": float(coarse),
-    #                 },
-    #             )
-    #         )
+        context = f"{title} {' '.join(sents)}".strip()
+        if title not in passages:
+            passages[title] = {"title": title, "paragraph_idx": doc_idx, "passage_id": title,
+                "context": context, "similarity": text_sim(expr, context)}
+    cands = sorted(passages.values(), key=lambda ev: -ev["similarity"])[:unres_top_similiar]
+    scores = _rerank_score_pairs(reranker, [(rerank_query, ev["context"]) for ev in cands])
+    for ev, score in zip(cands, scores):
+        ev["similarity"] = float(score)
+        ev["sentence_similarity"] = float(score)
+    cands.sort(key=lambda ev: -ev["similarity"])
+    return cands[:max(1, int(topk))], extract_union_keywords(qt, debug)
 
-    #     if local:
-    #         local.sort(key=lambda x: x[0], reverse=True)
-    #         all_cands.extend([x[1] for x in local])
-
-    # if not all_cands:
-    #     return [], union_keywords
-    all_cands.sort(key=lambda d: float(d["similarity"]), reverse=True)
-    all_cands=all_cands[:unres_top_similiar]
-
-    
-    pairs = []
-    for c in all_cands:
-        ctx = str(c.get("context") or "").strip()
-        title=str(c.get("title") or "").strip()
-        passage = f"{ctx}".strip()
-        pairs.append((rerank_query, passage))
-
-    scores = _rerank_score_pairs(reranker, pairs)
-    for c, sc in zip(all_cands, scores):
-        c["similarity"] = float(sc)
-        c["sentence_similarity"] = float(sc)
-
-    all_cands = [c for c in all_cands]
-
-    all_cands.sort(key=lambda d: float(d["similarity"]), reverse=True)
-    return all_cands[:topk], union_keywords
 
 def retrieve_musique(ex, qt, debug, topk, reranker):
-    """Paragraph-level retrieval (musique) with reranking."""
-    topk = max(1, int(topk))
-    q_texts = build_query_texts(qt, debug)
-    keywords = extract_union_keywords(qt, debug)
     rerank_query, question, expr = build_rerank_query(ex, qt, debug)
-
     cands = []
     for para_idx, title, txt in iter_paragraphs_musique(ex):
-        filter_text = f"{title} {txt}".strip()
-        # if not any_keyword_match(filter_text, keywords):
-        #     continue
-        coarse = text_sim(filter_text, rerank_query)
-        cands.append({
-                        "title": title,
-                        "paragraph_idx": int(para_idx),
-                        "sent_idx": 0,
-                        "context": filter_text,
-                        "similarity": 0.0,
-                        "sentence_similarity": 0.0,
-                    })
-        
-        # if not q_texts:
-        #     coarse = 0.0001
-        # else:
-        #     coarse = max(text_sim(q, filter_text) for q in q_texts)
-        # cands.append(
-        #     (
-        #         float(coarse),
-        #         {
-        #             "title": title,
-        #             "paragraph_idx": int(para_idx),
-        #             "sent_idx": 0,
-        #             "evidence": "",
-        #             "context": txt,
-        #             "similarity": float(coarse),
-        #             "sentence_similarity": float(coarse),
-        #         },
-        #     )
-        # )
-
-    if not cands:
-        return [], keywords
-
-    #cands.sort(key=lambda x: x[0], reverse=True)
-    cands.sort(key=lambda d: float(d["similarity"]), reverse=True)
+        context = f"{title} {txt}".strip()
+        cands.append({"title": title, "paragraph_idx": para_idx, "passage_id": str(para_idx),
+            "context": context, "similarity": text_sim(expr, context)})
+    cands.sort(key=lambda ev: -ev["similarity"])
     cands = cands[:unres_top_similiar]
+    scores = _rerank_score_pairs(reranker, [(rerank_query, ev["context"]) for ev in cands])
+    for ev, score in zip(cands, scores):
+        ev["similarity"] = float(score)
+        ev["sentence_similarity"] = float(score)
+    cands.sort(key=lambda ev: -ev["similarity"])
+    return cands[:max(1, int(topk))], extract_union_keywords(qt, debug)
 
-
-    pairs = []
-    for c in cands:
-        title = str(c.get("title") or "").strip()
-        txt = str(c.get("context") or "").strip()
-        passage = f"{txt}".strip()
-        pairs.append((rerank_query, passage))
-
-    scores = _rerank_score_pairs(reranker, pairs)
-    for c, sc in zip(cands, scores):
-        c["similarity"] = float(sc)
-        c["sentence_similarity"] = float(sc)
-    pool = [c for c in cands if float(c["similarity"])]
-    pool.sort(key=lambda d: float(d["similarity"]), reverse=True)
-
-    return pool[:topk], keywords
 
 import re
 
@@ -731,11 +765,7 @@ def _simple_norm(s: str) -> str:
     return s
 
 def tri_in_t_i(t_i, tri, require_rel= False) -> bool:
-    """
-    t_i: sentence string
-    tri: dict with string fields tri['h'], tri['r'], tri['t'] (or similar)
-    return True iff (h and t) appear in t_i; relation optional.
-    """
+    """Check whether a sentence contains both endpoints and optionally the relation."""
     sent = _simple_norm(t_i)
     h = _simple_norm(tri.get("head", ""))
     r = _simple_norm(tri.get("relation", ""))
@@ -751,6 +781,77 @@ def tri_in_t_i(t_i, tri, require_rel= False) -> bool:
     if require_rel:
         return bool(r) and (r in sent)
     return True
+
+
+def _write_text_index_recall_stats():
+    raw_path = os.getenv("TEXT_INDEX_RECALL_STATS", "").strip()
+    if not raw_path:
+        return
+    target = Path(raw_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.part")
+    temporary.write_text(
+        json.dumps(_TEXT_INDEX_RECALL_STATS, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(target)
+
+
+# Previous full-passage implementation retained for rollback.
+# def collect_source_passages(ex, kg_triples):
+#     passages = {}
+#     if DATASET == "musique":
+#         contexts = list(iter_paragraphs_musique(ex))
+#     else:
+#         contexts = [(idx, title, " ".join(sents)) for idx, title, sents in iter_context_units_2wiki_like(ex)]
+#     for tri in kg_triples:
+#         title = tri.get("title")
+#         evidence = " ".join(re.findall(r"\w+", str(tri.get("evidence") or "").casefold()))
+#         for doc_idx, ctx_title, source in contexts:
+#             if ctx_title != title:
+#                 continue
+#             if DATASET == "musique":
+#                 text = " ".join(re.findall(r"\w+", source.casefold()))
+#                 if not evidence or f" {evidence} " not in f" {text} ":
+#                     continue
+#             key = str(doc_idx) if DATASET == "musique" else title
+#             score = float(tri["rerank_score"])
+#             record = {"title": title, "paragraph_idx": doc_idx, "passage_id": key,
+#                 "context": f"{title} {source}".strip(), "similarity": score, "sentence_similarity": score}
+#             if key not in passages or score > passages[key]["similarity"]:
+#                 passages[key] = record
+#     return sorted(passages.values(), key=lambda ev: -ev["similarity"])
+
+def collect_source_passages(ex, kg_triples):
+    passages = {}
+    if DATASET == "musique":
+        contexts = list(iter_paragraphs_musique(ex))
+    else:
+        contexts = [(idx, title, "") for idx, title, sents in iter_context_units_2wiki_like(ex)]
+    for tri in kg_triples:
+        title = tri.get("title")
+        evidence = str(tri.get("evidence") or "").strip()
+        if not evidence:
+            continue
+        evidence_key = " ".join(evidence.casefold().split())
+        for doc_idx, ctx_title, source in contexts:
+            if ctx_title != title:
+                continue
+            if DATASET == "musique":
+                quote = " ".join(re.findall(r"\w+", evidence.casefold()))
+                text = " ".join(re.findall(r"\w+", source.casefold()))
+                if not quote or f" {quote} " not in f" {text} ":
+                    continue
+            passage_id = str(doc_idx) if DATASET == "musique" else title
+            key = (passage_id, evidence_key)
+            score = float(tri["rerank_score"])
+            record = {"title": title, "paragraph_idx": doc_idx, "passage_id": passage_id,
+                "context": evidence, "similarity": score, "sentence_similarity": score}
+            if key not in passages or score > passages[key]["similarity"]:
+                passages[key] = record
+    return sorted(passages.values(), key=lambda ev: -ev["similarity"])
+
+
 def main_2():
 
     kg = load_kg(KG_PATH)
@@ -785,31 +886,11 @@ def main_2():
             status = "unresolved"
 
             if ex is not None:
-                status = "resolved" if is_resolved_triple(debug, qt) else "unresolved"
+                status = "resolved" if is_resolved_triple(debug, qt, qi) else "unresolved"
 
                 if status == "resolved":
                     kg_triples = support_map.get(int(qi), []) or []
-                    for tri in kg_triples:
-                        title=kg['triples'][int(tri['kg_triple_id'])]['title']
-                        #evidence=kg['triples'][int(tri['kg_triple_id'])]['evidence']
-                        #print(evi)
-                        t_list = []
-                        if DATASET in ("2wiki", "hotpotqa"):
-                            for _, ctx_title, sents in iter_context_units_2wiki_like(ex):
-                                if ctx_title == title:
-                                    t_list = sents
-                                    break
-                        else:
-                            
-                            for _, para_title, para_txt in iter_paragraphs_musique(ex):
-                                if para_title == title and para_txt:
-                                    t_list.append(para_txt)
-                        for t_i in t_list:
-                            if tri_in_t_i(t_i,tri):
-                                candidate_evidences.append({'title':title,'context':t_i})
-                                break
-                    #entity_keywords = extract_union_keywords(qt, debug)
-                    #candidate_evidences = []
+                    candidate_evidences = collect_source_passages(ex, kg_triples)
                 else:
                     per_topk = TOPK_UNRESOLVED
                     if DATASET in ("2wiki", "hotpotqa"):
@@ -825,6 +906,7 @@ def main_2():
                     "entity_keywords": entity_keywords,
                     "candidate_evidences": candidate_evidences,
                     "kg_triples": kg_triples,
+                    "sufficiency_checked": next((r.get("checked", False) for r in debug.get("triples_debug", []) if r.get("query_triple_index") == qi), False),
                 }
             )
 
@@ -845,6 +927,7 @@ def main_2():
 
     with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
+    _write_text_index_recall_stats()
 
 
 if __name__ == "__main__":

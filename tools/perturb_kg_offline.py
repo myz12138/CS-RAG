@@ -1,13 +1,5 @@
 ﻿#!/usr/bin/env python3
-"""
-Offline KG perturbation for robustness experiments.
-
-This script supports issue-driven perturbation:
-- Choose issue category or combinations in YAML.
-- Sweep ratios.
-- Choose injection scope: global KG or query-related subgraph.
-- Expand scenarios by combine_mode (cartesian / aligned).
-"""
+"""Generate perturbed KGs for robustness experiments."""
 
 import argparse
 import json
@@ -142,11 +134,7 @@ def _sanitize_triples(triples: List[Dict], n_entities: int) -> List[Dict]:
 
 
 def _copy_kg_fast(base_kg: Dict) -> Dict:
-    """
-    Faster than deepcopy for this KG shape:
-    - entities/triples are flat list[dict] rows
-    - we only need per-row dict copy
-    """
+    """Copy KG rows without modifying the original graph."""
     entities = [dict(e) if isinstance(e, dict) else e for e in base_kg["entities"]]
     triples = [dict(tr) if isinstance(tr, dict) else tr for tr in base_kg["triples"]]
     return {"entities": entities, "triples": triples}

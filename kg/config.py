@@ -28,8 +28,8 @@ _DEFAULTS = {
 
 def build_parser():
     parser = argparse.ArgumentParser(description="C2RAG Two-Stage Retrieval")
-    parser.add_argument("--api_key", type=str, default="sk-4ErcoxMACExg7eAe3bgpJyV4zXR7Znsis7X1KYjaucgMbElo")
-    parser.add_argument("--base_url", type=str, default="https://api.holdai.top/v1/")
+    parser.add_argument("--api_key", type=str, default=os.getenv("OPENAI_API_KEY", ""))
+    parser.add_argument("--base_url", type=str, default=os.getenv("OPENAI_BASE_URL", ""))
     parser.add_argument("--model_name", type=str, default="gpt-4o-mini")
 
     parser.add_argument("--dataset", type=str, choices=sorted(list(_DEFAULTS.keys())), default="musique")

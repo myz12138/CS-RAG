@@ -1,0 +1,10 @@
+# 运行固定版本 CS-RAG 参考脚本时所需的可选依赖。
+# 只有确实需要执行算法时，才在本工程自己的虚拟环境中安装；基础 API
+# 不会自动安装这些体积较大的依赖。
+openai>=1.0
+numpy>=1.24
+requests>=2.31
+tqdm>=4.66
+torch>=2.1
+transformers>=4.40
+sentence-transformers>=2.6

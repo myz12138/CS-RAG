@@ -43,7 +43,7 @@ def normalize_query_triple(qt):
     if not isinstance(qt, dict):
         return {"head": "", "tail": "", "relation_variants": []}
     qt = dict(qt)
-    qt.pop("relation", None)  # query-side relation removed
+    qt.pop("relation", None)
     h = qt.get("head", "")
     t = qt.get("tail", "")
     rv = qt.get("relation_variants", [])

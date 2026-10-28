@@ -20,7 +20,7 @@ def f1_score(pred, gold):
 
 def recall_at_k(retrieved_ids, gold_ids, k):
     R = set(retrieved_ids[:k]); G = set(gold_ids)
-    return int(len(R & G) > 0)
+    return len(R & G) / len(G) if G else 0.0
 
 def avg(lst):
     return sum(lst)/max(1,len(lst))

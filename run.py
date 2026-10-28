@@ -1,10 +1,5 @@
 ﻿#!/usr/bin/env python3
-"""
-Simple sequential runner:
-phase1 -> phase2 -> evaluation
-
-No stdout/stderr interception. Child scripts print their own tqdm bars.
-"""
+"""Run structural retrieval, text retrieval, and QA evaluation in sequence."""
 
 import argparse
 import json

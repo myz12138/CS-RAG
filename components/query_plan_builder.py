@@ -1,4 +1,4 @@
-﻿
+
 import json, os, time
 from tqdm import tqdm
 from openai import OpenAI
@@ -10,20 +10,22 @@ MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 DATASET = os.getenv("DATASET", "hotpotqa")
 NUM_SAMPLES = int(os.getenv("NUM_SAMPLES", "1000"))
+RELATION_VARIANTS = 3
 SLEEP_SECS = float(os.getenv("SLEEP_SECS", "0.5"))
+PLANNER_MAX_RETRIES = int(os.getenv("QUERY_PLAN_MAX_RETRIES", "3"))
 
 _DEFAULTS = {
     "2wiki": {
         "DATA_PATH": "dataset/2wikimultihopqa.json",
-        "OUTPUT_FILE": "planned_queries/2wiki_data/query_graph_v8_2wiki.json",
+        "OUTPUT_FILE": "planner_queries/2wiki_data/query_graph_2wiki.json",
     },
     "hotpotqa": {
         "DATA_PATH": "dataset/hotpotqa.json",
-        "OUTPUT_FILE": "planned_queries/hotpotqa_data/query_graph_v8_hotpotqa.json",
+        "OUTPUT_FILE": "planner_queries/hotpotqa_data/query_graph_hotpotqa.json",
     },
     "musique": {
         "DATA_PATH": "dataset/musique.json",
-        "OUTPUT_FILE": "planned_queries/musique_data/query_graph_v8_musique.json",
+        "OUTPUT_FILE": "planner_queries/musique_data/query_graph_musique.json",
     },
 }
 
@@ -33,7 +35,6 @@ if DATASET not in _DEFAULTS:
 DATA_PATH = os.getenv("DATA_PATH", _DEFAULTS[DATASET]["DATA_PATH"])
 OUTPUT_FILE = os.getenv("OUTPUT_FILE", _DEFAULTS[DATASET]["OUTPUT_FILE"])
 
-# SYSTEM_PROMPT = """You are an expert in Knowledge Graphs and Question Answering. 
 
 
 
@@ -56,15 +57,16 @@ Rules:
 4. Each element in "triples" must be an object containing:
    - "head": string
    - "relation": string (the main, canonical relation phrase)
-   - "relation_variants": a list of 3鈥? short relation phrases (strings) that are semantically similar to "relation", with "relation" itself as the first element in the list
+   - "relation_variants": a list of exactly 3 distinct short relation phrases (strings) that are semantically similar to "relation", with "relation" itself as the first element in the list
    - "tail": string
 5. The triples should form a minimal but sufficient reasoning chain: if every "?" is filled with the correct entity/value, the question can be answered using ONLY these triples.
-6. When the question asks for a property (such as nationality, position, time period, location, etc.) of some entity mentioned or described in the question, the triple containing "?" for that property should directly connect that property to the correct entity variable (the one that represents 鈥渢he person/thing being asked about鈥?, rather than to a side or background entity.
+6. When the question asks for a property (such as nationality, position, time period, location, etc.) of some entity mentioned or described in the question, the triple containing "?" for that property should directly connect that property to the correct entity variable (the one that represents "the person/thing being asked about"), rather than to a side or background entity.
 7. Make "relation" as informative as needed so that the meaning of the triple is clear even without the original question (avoid very vague relations like just "during", "of", "has" when a more specific phrase is possible).
-8. Do not generate triples whose head and tail are both known constants. When an entity is described by additional conditions (such as relative clauses, roles, time ranges, or other modifiers), treat these as constraints attached to the SAME variable that represents that entity, or merge it into that entity mention as a modifier. 
+8. When an entity is described by additional conditions (such as relative clauses, roles, time ranges, or other modifiers), treat these as constraints attached to the SAME variable that represents that entity, or merge it into that entity mention as a modifier. 
 9. Do not let a single variable stand for multiple logically different unknowns. Only reuse the same variable if the question clearly implies it is the same underlying entity or value; otherwise, use different variable names (e.g. ?country1, ?country2) when needed.
 10. Keep variable names short and generic (e.g. ?manager, ?movie, ?company, ?country) and use relations/triples to express detailed descriptions or roles. Do not encode long descriptive phrases inside the variable name itself.
-11.  All generated triplets must contain at least one unknown variable. If the triples with two known variablies (enetities), they must be deleted.
+11. Prefer triples that contain at least one unknown variable. Avoid triples whose head and tail are both known constants unless they are necessary to preserve an explicit query condition.
+12. If the query provides a concrete value (country/year/location), connect directly to it; do not introduce a variable just to equal that value.
 
 
 **Input**: "The Oberoi family is part of a hotel company that has a head office in what city?"
@@ -74,7 +76,7 @@ Rules:
     {
       "head": "Oberoi family",
       "relation": "part of",
-      "relation_variants": ["part of", "is part of", "belongs to", "is a member of"],
+      "relation_variants": ["part of", "is part of", "belongs to"],
       "tail": "?hotel company"
     },
     {
@@ -87,7 +89,6 @@ Rules:
       "head": "?hotel company",
       "relation": "located in",
       "relation_variants": ["located in", "is based in", "is situated in"],
-      "inverse_relation_variants": ["location of", "is home to", "hosts"],
       "tail": "?city"
     }
   ]
@@ -145,7 +146,7 @@ Rules:
  ]
 }
 
-**Input**: "Which film has the director who is older, God'S Gift To Women or Aldri Annet Enn Br氓k?"
+**Input**: "Which film has the director who is older, God'S Gift To Women or Aldri Annet Enn Bråk?"
 **Output**:
 {
 "triples": [
@@ -154,8 +155,8 @@ Rules:
       "relation": "directed",
       "relation_variants": [
         "directed",
-        "was directed by",
-        "film direction by"
+        "was the director of",
+        "directed the film"
       ],
       "tail": "God'S Gift To Women"
     },
@@ -164,10 +165,10 @@ Rules:
       "relation": "directed",
       "relation_variants": [
         "directed",
-        "was directed by",
-        "film direction by"
+        "was the director of",
+        "directed the film"
       ],
-      "tail": "Aldri Annet Enn Br氓k"
+      "tail": "Aldri Annet Enn Bråk"
     },
     {
       "head": "?director1",
@@ -203,8 +204,7 @@ Rules:
       "relation_variants": [
         "written by",
         "authored by",
-        "author of",
-        "created by"
+        "author of"
       ],
       "tail": "?author"
     },
@@ -214,8 +214,7 @@ Rules:
       "relation_variants": [
         "nationality",
         "country of citizenship",
-        "citizen of",
-        "from"
+        "citizen of"
       ],
       "tail": "?nationality"
     }
@@ -253,7 +252,7 @@ def _normalize_triples(triples_raw):
 
         head = "" if tr.get("head") is None else str(tr.get("head"))
         tail = "" if tr.get("tail") is None else str(tr.get("tail"))
-        relation = "" if tr.get("relation") is None else str(tr.get("relation"))
+        relation = "" if tr.get("relation") is None else str(tr.get("relation")).strip()
 
         rv = tr.get("relation_variants")
         rv_clean = []
@@ -276,6 +275,10 @@ def _normalize_triples(triples_raw):
             if rv_clean:
                 relation = rv_clean[0]
 
+        if not rv_clean:
+            raise ValueError("The constraint has no valid relation phrase.")
+        rv_clean = rv_clean[:RELATION_VARIANTS]
+
         normalized.append(
             {
                 "head": head.strip(),
@@ -289,6 +292,7 @@ def _normalize_triples(triples_raw):
 
 def get_query_plan_with_retry(question, client, max_retries=3):
     user_content = f"Question: {question}\nOutput:"
+    user_content += f"\nUse exactly {RELATION_VARIANTS} distinct relation_variants per triple, including the canonical relation first."
     for attempt in range(max_retries):
         try:
             resp = client.chat.completions.create(
@@ -352,7 +356,11 @@ def main_query():
             question = get_question(ex)
             answer = get_answer(ex)
 
-            triples = get_query_plan_with_retry(question, client)
+            triples = get_query_plan_with_retry(
+                question,
+                client,
+                max_retries=max(1, PLANNER_MAX_RETRIES),
+            )
 
             item = {
                 "id": qid,

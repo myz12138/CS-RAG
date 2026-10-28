@@ -4,92 +4,57 @@ import re
 
 
 class LLMClient:
-    """
-    OpenAI-compatible LLM client.
+    def __init__(self, api_key=None, base_url=None, model=None,
+                 temperature=None, max_tokens=None):
+        from openai import OpenAI
 
-    Environment-based defaults:
-    - LLM_API_KEY or OPENAI_API_KEY
-    - LLM_ENDPOINT or OPENAI_BASE_URL (falls back to official OpenAI endpoint)
-    - LLM_MODEL (default: gpt-4o-mini)
-    """
-
-    def __init__(
-        self,
-        api_key: str = None,
-        base_url: str = None,
-        model: str = None,
-        temperature: float = None,
-        max_tokens: int = None,
-    ):
-        try:
-            from openai import OpenAI
-        except Exception as e:
-            raise RuntimeError(f"openai package is required: pip install 'openai>=1.0.0' ({e})")
-
-        self.api_key = (
-            api_key
-            or os.environ.get("LLM_API_KEY")
-            or os.environ.get("OPENAI_API_KEY")
-            or ""
-        )
-        self.base_url = (
-            base_url
-            or os.environ.get("LLM_ENDPOINT")
-            or os.environ.get("OPENAI_BASE_URL")
-            or "https://api.openai.com/v1"
-        )
-        self.model = model or os.environ.get("LLM_MODEL", "gpt-4o-mini")
+        self.backend = os.getenv("LLM_BACKEND", "api").strip().lower()
+        if self.backend not in ("api", "local"):
+            raise ValueError("LLM_BACKEND must be api or local.")
+        self.model = model or os.getenv("LLM_MODEL", "gpt-4o-mini")
         self.default_temperature = float(
-            temperature if temperature is not None else os.environ.get("LLM_TEMPERATURE", 0.2)
+            temperature if temperature is not None else os.getenv("LLM_TEMPERATURE", "0.2")
         )
         self.default_max_tokens = int(
-            max_tokens if max_tokens is not None else os.environ.get("LLM_MAX_TOKENS", 256)
+            max_tokens if max_tokens is not None else os.getenv("LLM_MAX_TOKENS", "256")
         )
+        if self.backend == "local":
+            self.base_url = base_url or os.getenv("LLM_ENDPOINT", "")
+            self.api_key = api_key or os.getenv("LLM_LOCAL_API_KEY") or "EMPTY"
+            if not self.base_url or not (model or os.getenv("LLM_MODEL")):
+                raise ValueError("Local inference requires LLM_ENDPOINT and LLM_MODEL.")
+        else:
+            self.api_key = api_key or os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY", "")
+            self.base_url = base_url or os.getenv("LLM_ENDPOINT") or os.getenv("OPENAI_BASE_URL", "")
+            if not self.api_key:
+                raise ValueError("Set LLM_API_KEY or OPENAI_API_KEY.")
+        self.base_url = self.base_url.strip().rstrip("/")
+        if self.base_url.endswith("/chat/completions"):
+            self.base_url = self.base_url[:-len("/chat/completions")]
+        if self.base_url and not self.base_url.endswith("/v1"):
+            self.base_url += "/v1"
+        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url or None)
 
-        if not self.api_key:
-            raise RuntimeError("Missing API key: set LLM_API_KEY or OPENAI_API_KEY.")
-
-        b = str(self.base_url).strip().rstrip("/")
-        if not b.endswith("/v1"):
-            b = b + "/v1"
-        self.base_url = b
-
-        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-
-    def ask_json(self, system_prompt: str, user_prompt: str):
-        """
-        Ask model and parse JSON from response.
-        Returns {} on parse failure.
-        """
+    def ask_json(self, system_prompt, user_prompt):
         try:
-            resp = self.client.chat.completions.create(
-                model=self.model,
-                temperature=self.default_temperature,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                max_tokens=self.default_max_tokens,
-            )
-            content = (resp.choices[0].message.content or "").strip()
-            m = re.search(r"\{[\s\S]*\}$|^\[[\s\S]*\]$", content)
-            if m:
-                content = m.group(0)
-            return json.loads(content)
+            content = self.chat([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ])
+            match = re.search(r"\{[\s\S]*\}$|^\[[\s\S]*\]$", content)
+            return json.loads(match.group(0) if match else content)
         except Exception:
             return {}
 
     def chat(self, messages, temperature=None, max_tokens=None):
-        t = self.default_temperature if temperature is None else float(temperature)
-        mt = self.default_max_tokens if max_tokens is None else int(max_tokens)
+        kwargs = {}
+        if self.backend == "local" and "qwen3" in self.model.lower():
+            kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
         resp = self.client.chat.completions.create(
             model=self.model,
-            temperature=t,
             messages=messages,
-            max_tokens=mt,
+            temperature=self.default_temperature if temperature is None else float(temperature),
+            max_tokens=self.default_max_tokens if max_tokens is None else int(max_tokens),
+            **kwargs,
         )
-        try:
-            content = resp.choices[0].message.content
-        except Exception:
-            content = getattr(resp.choices[0], "text", "")
-        return (content or "").strip()
+        return (resp.choices[0].message.content or "").strip()
